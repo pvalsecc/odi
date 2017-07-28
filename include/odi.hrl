@@ -3,6 +3,7 @@
 -define(o_short, 1/big-signed-unit:16).
 -define(o_int, 1/big-signed-unit:32).
 -define(o_long, 1/big-signed-unit:64).
+-define(o_longlong, 1/big-signed-unit:128).
 -define(o_float, 1/big-float-unit:32).
 -define(o_double, 1/big-float-unit:64).
 
@@ -13,7 +14,9 @@
 
 -define(O_DRV_NAME, <<"OrientDB Erlang Client">>).
 -define(O_DRV_VER, <<"0.1">>).
--define(O_PROTO_VER, 1).
+-define(O_PROTO_VER, 36).
+
+-define(O_RECORD_SERIALIZER_BINARY, <<"ORecordSerializerBinary">>).
 
 -define(O_SHUTDOWN, 1).
 -define(O_CONNECT, 2).
@@ -24,40 +27,50 @@
 -define(O_DB_DELETE, 7).
 -define(O_DB_SIZE, 8).
 -define(O_DB_COUNTRECORDS, 9).
--define(O_DATACLUSTER_ADD, 10).
--define(O_DATACLUSTER_REMOVE, 11).
--define(O_DATACLUSTER_COUNT, 12).
--define(O_DATACLUSTER_DATARANGE, 13).
--define(O_DATACLUSTER_COPY, 14).
--define(O_DATACLUSTER_LH_CLUSTER_IS_USED, 16).
--define(O_DATASEGMENT_ADD, 20).
--define(O_DATASEGMENT_REMOVE, 21).
--define(O_REQUEST_RECORD_METADATA, 29).
+-define(O_DATACLUSTER_ADD, 10).  %% deprecated
+-define(O_DATACLUSTER_REMOVE, 11).  %% deprecated
+-define(O_DATACLUSTER_COUNT, 12).  %% deprecated
+-define(O_DATACLUSTER_DATARANGE, 13).  %% deprecated
+-define(O_DATACLUSTER_COPY, 14).  %% deprecated
+-define(O_DATACLUSTER_LH_CLUSTER_IS_USED, 16).  %% deprecated
+-define(O_DATASEGMENT_ADD, 20).  %% deprecated
+-define(O_DATASEGMENT_REMOVE, 21).  %% deprecated
+-define(O_RECORD_METADATA, 29).  %% deprecated
 -define(O_RECORD_LOAD, 30).
 -define(O_RECORD_CREATE, 31).
 -define(O_RECORD_UPDATE, 32).
 -define(O_RECORD_DELETE, 33).
 -define(O_RECORD_COPY, 34).
--define(O_REQUEST_RECORD_CHANGE_IDENTITY, 35).
--define(O_REQUEST_POSITIONS_HIGHER, 36).
--define(O_REQUEST_POSITIONS_LOWER, 37).
--define(O_REQUEST_RECORD_CLEAN_OUT, 38).
--define(O_REQUEST_POSITIONS_FLOOR, 39).
+-define(O_RECORD_CHANGE_IDENTITY, 35).  %% deprecated
+-define(O_POSITIONS_HIGHER, 36).  %% deprecated
+-define(O_POSITIONS_LOWER, 37).  %% deprecated
+-define(O_RECORD_CLEAN_OUT, 38).  %% deprecated
+-define(O_POSITIONS_FLOOR, 39).  %% deprecated
 -define(O_COMMAND, 41).
--define(O_REQUEST_POSITIONS_CEILING, 42).
+-define(O_POSITIONS_CEILING, 42).  %% deprecated
+-define(O_RECORD_LOAD_IF_VERSION_NOT_LATEST, 44).  %% TODO
 -define(O_TX_COMMIT, 60).
 -define(O_CONFIG_GET, 70).
 -define(O_CONFIG_SET, 71).
 -define(O_CONFIG_LIST, 72).
 -define(O_DB_RELOAD, 73).
 -define(O_DB_LIST, 74).
--define(O_REQUEST_PUSH_RECORD, 74).
--define(O_REQUEST_PUSH_DISTRIB_CONFIG, 74).
--define(O_REQUEST_DB_COPY, 74).
--define(O_REQUEST_REPLICATION, 74).
--define(O_REQUEST_CLUSTER, 74).
--define(O_REQUEST_DB_TRANSFER, 74).
--define(O_REQUEST_DB_FREEZE, 74).
--define(O_REQUEST_DB_RELEASE, 74).
+-define(O_PUSH_RECORD, 74).  %% deprecated
+-define(O_PUSH_DISTRIB_CONFIG, 74).  %% deprecated
+-define(O_DB_COPY, 90).  %% deprecated
+-define(O_REPLICATION, 91).  %% deprecated
+-define(O_CLUSTER, 91).
+-define(O_DB_TRANSFER, 93).
+-define(O_DB_FREEZE, 94).
+-define(O_DB_RELEASE, 95).
+-define(O_CREATE_SBTREE_BONZAI, 110).  %% TODO
+-define(O_SBTREE_BONZAI_GET, 111).  %% TODO
+-define(O_SBTREE_BONZAI_FIRST_KEY, 112).  %% TODO
+-define(O_SBTREE_BONZAI_GET_ENTRIE_MAJOR, 113).  %% TODO
+-define(O_RIDBAG_GET_SIZE, 114).  %% TODO
+-define(O_INDEX_GET, 120).  %% TODO
+-define(O_INDEX_PUT, 121).  %% TODO
+-define(O_INDEX_REMOVE, 122).  %% TODO
+
 -define(O_OK, 1).
 -define(O_ERROR, 0).

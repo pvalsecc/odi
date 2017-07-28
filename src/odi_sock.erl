@@ -17,9 +17,8 @@
 
 -record(state, {mod,    %socket module: gen_tcp or ssl(unsupported)
                 sock,   %opened socket
-				protocolVersion = 0,
                 session_id = -1, %OrientDB session Id
-                open_mode, %connection opened with: connect() | db_open()
+                open_mode = wait_version, %connection opened with: connect() | db_open()
                 data = <<>>, %received data from socket
                 queue = queue:new(), %commands queue
                 timeout = 5000 %network timeout
@@ -101,7 +100,7 @@ handle_info({inet_reply, _, Status}, State) ->
     {stop, Status, flush_queue(State, {error, Status})};
 
 % receive data from socket
-handle_info({_, Sock, Data2}, #state{data = Data, sock = Sock} = State) ->
+handle_info({tcp, Sock, Data2}, #state{data = Data, sock = Sock} = State) ->
     loop(State#state{data = <<Data/binary, Data2/binary>>}).
 
 %Handle code change
@@ -115,28 +114,29 @@ code_change(_OldVsn, State, _Extra) ->
 %   when Command /= sync ->
 %     {noreply, finish(State, {error, sync_required})};
 
-%This is the first operation requested by the client when it needs to work with the server instance without openning a database. 
+%This is the first operation requested by the client when it needs to work with the server instance without openning a database.
 %It returns the session id of the client.
-%  Request:  (driver-name:string)(driver-version:string)(protocol-version:short)(client-id:string)(user-name:string)(user-password:string)
-%  Response: (session-id:int)
+%  Request: (driver-name:string)(driver-version:string)(protocol-version:short)(client-id:string)
+%           (serialization-impl:string)(token-session:boolean)(support-push)(collect-stats)
+%           (user-name:string)(user-password:string)
+%  Response: (session-id:int)(token:bytes)
 command({connect, Host, Username, Password, Opts}, State) ->
     % % storing login data in the process dictionary for security reasons?
     % put(username, Username),
     % put(password, Password),
-    State2 = pre_connect(State, Host, Opts),
+    {ok, State2} = pre_connect(State, Host, Opts),
     sendRequest(State2, ?O_CONNECT,
-        [string, string, short, string, string, string],
-        [?O_DRV_NAME, ?O_DRV_VER, ?O_PROTO_VER, null, Username, Password]),
-    inet:setopts(State2#state.sock, [{active, true}]),
+        [string, string, short, string, string, bool, bool, bool, string, string],
+        [?O_DRV_NAME, ?O_DRV_VER, ?O_PROTO_VER, null, ?O_RECORD_SERIALIZER_BINARY, false, false, false, Username, Password]),
     {noreply, State2};
 
 %This is the first operation the client should call. It opens a database on the remote OrientDB Server.
 %Returns the Session-Id to being reused for all the next calls and the list of configured clusters.
-%  Request:  (driver-name:string)(driver-version:string)(protocol-version:short)(client-id:string)
-%           (database-name:string)(database-type:string)(user-name:string)(user-password:string)
-%  Response: (session-id:int)(num-of-clusters:short)
-%           [(cluster-name:string)(cluster-id:short)(cluster-type:string)(cluster-dataSegmentId:short)]
-            %(cluster-config:bytes)(orientdb-release:string)
+%  Request: (driver-name:string)(driver-version:string)(protocol-version:short)(client-id:string)
+%           (serialization-impl:string)(token-session:boolean)(support-push:boolean)(collect-stats:boolean)
+%           (database-name:string)(user-name:string)(user-password:string)
+%  Response: (session-id:int)(token:bytes)(num-of-clusters:short)[(cluster-name:string)(cluster-id:short)]
+%           (cluster-config:bytes)(orientdb-release:string)
 %dbType = document | graph.
 command({db_open, Host, DBName, Username, Password, Opts}, State) ->
     % % storing login data in the process dictionary for security reasons?
@@ -145,21 +145,20 @@ command({db_open, Host, DBName, Username, Password, Opts}, State) ->
     case pre_connect(State, Host, Opts) of
         {error, _} = E -> {noreply, finish(State, E)};
         {ok, State2} ->
-            erlang:display([?O_DRV_NAME, ?O_DRV_VER, ?O_PROTO_VER, null, DBName, Username, Password]),
             sendRequest(State2, ?O_DB_OPEN,
-                [string, string, short, string, string, string, string],
-                [?O_DRV_NAME, ?O_DRV_VER, ?O_PROTO_VER, null, DBName, Username, Password]),
-            inet:setopts(State2#state.sock, [{active, true}]),
+                [string, string, short, string, string, bool, bool, bool, string, string, string],
+                [?O_DRV_NAME, ?O_DRV_VER, ?O_PROTO_VER, null, ?O_RECORD_SERIALIZER_BINARY, false,
+                false, false, DBName, Username, Password]),
             {noreply, State2}
     end;
 
 %Creates a database in the remote OrientDB server instance
-%   Request:  (database-name:string)(database-type:string)(storage-type:string)
+%   Request: (database-name:string)(database-type:string)(storage-type:string)(backup-path)
 %   Response: empty
-command({db_create, DatabaseName, DatabaseType, StorageType}, State) ->
+command({db_create, DatabaseName, DatabaseType, StorageType, BackupPath}, State) ->
     sendRequest(State, ?O_DB_CREATE,
-        [string, string, string],
-        [DatabaseName, DatabaseType, StorageType]),
+        [string, string, string, string],
+        [DatabaseName, DatabaseType, StorageType, BackupPath]),
     {noreply, State};
 
 %Closes the database and the network connection to the OrientDB Server instance. No return is expected. The socket is also closed.
@@ -172,16 +171,16 @@ command({db_close}, State) ->
 
 %Asks if a database exists in the OrientDB Server instance. It returns true (non-zero) or false (zero).
 %   Request:  (database-name:string) <-- before 1.0rc1 this was empty (server-storage-type:string - since 1.5-snapshot)
-%   Response: (result:byte)
-command({db_exist, DatabaseName}, State) ->
+%   Response: (result:bool)
+command({db_exist, DatabaseName, StorageType}, State) ->
     sendRequest(State, ?O_DB_EXIST,
-        [string],
-        [DatabaseName]),
+        [string, string],
+        [DatabaseName, StorageType]),
     {noreply, State};
 
 %Reloads database information. Available since 1.0rc4.
 %   Request:  empty
-%   Response:(num-of-clusters:short)[(cluster-name:string)(cluster-id:short)(cluster-type:string)(cluster-dataSegmentId:short)]
+%   Response: (num-of-clusters:short)[(cluster-name:string)(cluster-id:short)]
 command({db_reload}, State) ->
     sendRequest(State, ?O_DB_RELOAD, [], []),
     {noreply, State};
@@ -213,10 +212,10 @@ command({db_countrecords}, State) ->
 %Add a new data cluster.
 %   Request:  (type:string)(name:string)(location:string)(datasegment-name:string)
 %   Response: (new-cluster:short)
-command({datacluster_add, Type, Name, Location, DataSegmentName}, State) ->
+command({datacluster_add, Name, ClusterId}, State) ->
     sendRequest(State, ?O_DATACLUSTER_ADD,
-        [string, string, string, string],
-        [Type, Name, Location, DataSegmentName]),
+        [string, short],
+        [Name, ClusterId]),
     {noreply, State};
 
 %Remove a cluster.
@@ -228,110 +227,69 @@ command({datacluster_remove, ClusterId}, State) ->
         [ClusterId]),
     {noreply, State};
 
-%Returns the number of records in one or more clusters.
-%   Request:  (cluster-count:short)[cluster-number:short](count-tombstones:byte)
-%   Response: (records-in-clusters:long)
-command({datacluster_count, ClustersIds}, State) ->
-    sendRequest(State, ?O_DATACLUSTER_COUNT,
-        {short, [short]},
-        [[N] || N <- ClustersIds]),
-    {noreply, State};
-
-%Returns the range of record ids for a cluster.
-%   Request:  (cluster-number:short)
-%   Response: (begin:long)(end:long)
-command({datacluster_datarange, ClusterId}, State) ->
-    sendRequest(State, ?O_DATACLUSTER_DATARANGE,
-        [short],
-        [ClusterId]),
-    {noreply, State};
-
-%Add a new data segment.
-%   Request:  (name:string)(location:string)
-%   Response: (new-datasegment-id:int)
-command({datasergment_add, Name, Location}, State) ->
-    sendRequest(State, ?O_DATASEGMENT_ADD,
-        [string, string],
-        [Name, Location]),
-    {noreply, State};
-
-%Drop a data segment.
-%   Request:  (name:string)
-%   Response: (succeeded:boolean)
-command({datasergment_remove, Name}, State) ->
-    sendRequest(State, ?O_DATASEGMENT_REMOVE,
-        [string],
-        [Name]),
-    {noreply, State};
-
 %Create a new record. Returns the position in the cluster of the new record. New records can have version > 0 (since v1.0) in case the RID has been recycled.
-%   Request:  (datasegment-id:int)(cluster-id:short)(record-content:bytes)(record-type:byte)(mode:byte)
-%   Response: (cluster-position:long)(record-version:int)
+%   Request: (cluster-id:short)(record-content:bytes)(record-type:byte)(mode:byte)
+%   Response: (cluster-id:short)(cluster-position:long)(record-version:int)(count-of-collection-changes)[(uuid-most-sig-bits:long)(uuid-least-sig-bits:long)(updated-file-id:long)(updated-page-index:long)(updated-page-offset:int)]*
 command({record_create, ClusterId, RecordContent, RecordType, Mode}, State) ->
     sendRequest(State, ?O_RECORD_CREATE,
         [short, bytes, byte, byte],
         [ClusterId, RecordContent,
         odi_bin:encode_record_type(RecordType),
-        odi_bin:switch(Mode == sync, 0, 1)]),
+        odi_bin:mode_to_byte(Mode)]),
     {noreply, State};
 
 %Load a record by RecordID, according to a fetch plan
-%   Request:  (cluster-id:short)(cluster-position:long)(fetch-plan:string)(ignore-cache:byte)(load-tombstones:byte)
-%   Response: [(payload-status:byte)[(record-content:bytes)(record-version:int)(record-type:byte)]*]+
-command({record_load, ClusterId, ClusterPosition, FetchPlan}, State) ->
+%   Request: (cluster-id:short)(cluster-position:long)(fetch-plan:string)(ignore-cache:boolean)(load-tombstones:boolean)
+%   Response: [(payload-status:byte)[(record-type:byte)(record-version:int)(record-content:bytes)]*]+
+command({record_load, ClusterId, ClusterPosition, FetchPlan, IgnoreCache}, State) ->
     sendRequest(State, ?O_RECORD_LOAD,
-        [short, long, string],
-        [ClusterId, ClusterPosition, FetchPlan]),
+        [short, long, string, bool, bool],
+        [ClusterId, ClusterPosition, FetchPlan, IgnoreCache, false]),
     {noreply, State};
 
 %Update a record. Returns the new record's version.
-%   Request:  (cluster-id:short)(cluster-position:long)(record-content:bytes)(record-version:int)(record-type:byte)(mode:byte)
-%   Response: (record-version:int)
-command({record_update, ClusterId, ClusterPosition, RecordContent, RecordVersion, RecordType, Mode}, State) ->
+%   Request: (cluster-id:short)(cluster-position:long)(update-content:boolean)(record-content:bytes)(record-version:int)(record-type:byte)(mode:byte)
+%   Response: (record-version:int)(count-of-collection-changes)[(uuid-most-sig-bits:long)(uuid-least-sig-bits:long)(updated-file-id:long)(updated-page-index:long)(updated-page-offset:int)]*
+command({record_update, ClusterId, ClusterPosition, UpdateContent, RecordContent, RecordVersion, RecordType, Mode}, State) ->
     sendRequest(State, ?O_RECORD_UPDATE,
-        [short, long, bytes, integer, byte, byte],
-        [ClusterId, ClusterPosition, RecordContent,
-        RecordVersion, %odi_bin:encode_record_vc(RecordVersionControl),
+        [short, long, bool, bytes, integer, byte, byte],
+        [ClusterId, ClusterPosition, UpdateContent, RecordContent,
+        RecordVersion,
         odi_bin:encode_record_type(RecordType),
-        odi_bin:switch(Mode == sync, 0, 1)]),
+        odi_bin:mode_to_byte(Mode)]),
     {noreply, State};
 
 %Delete a record by its RecordID. During the optimistic transaction the record will be deleted only if the versions match.
 %Returns true if has been deleted otherwise false.
 %   Request:  (cluster-id:short)(cluster-position:long)(record-version:int)(mode:byte)
-%   Response: (payload-status:byte)
+%   Response: (has-been-deleted:boolean)
 command({record_delete, ClusterId, ClusterPosition, RecordVersion, Mode}, State) ->
     sendRequest(State, ?O_RECORD_DELETE,
         [short, long, integer, byte],
         [ClusterId, ClusterPosition, RecordVersion,
-        odi_bin:switch(Mode == sync, 0, 1)]),
+        odi_bin:mode_to_byte(Mode)]),
     {noreply, State};
 
 %Executes remote commands.
-%   Request:  (mode:byte)(class-name:string)(command-payload-length:int)(command-payload)
+%   Request:  (mode:byte)(command-payload-length:int)(class-name:string)(command-payload)
 %   Response:
 %   - synchronous commands: [(synch-result-type:byte)[(synch-result-content:?)]]+
 %   - asynchronous commands: [(asynch-result-type:byte)[(asynch-result-content:?)]*](pre-fetched-record-size)[(pre-fetched-record)]*+
-command({command_async, QueryText, Limit, FetchPlan}, State) ->
-    FetchPlan2 = case FetchPlan of default -> "*:1"; _ -> FetchPlan end,
-    CommandPayload = odi_bin:encode([string, string, integer, string, rawbytes],
-        ["com.orientechnologies.orient.core.sql.query.OSQLAsynchQuery",
-        QueryText, Limit, FetchPlan2, <<0:?o_int, 0:?o_int, 0:?o_int>>]),
-    sendRequest(State, ?O_COMMAND,
-        [byte, bytes],
-        [$a, CommandPayload]),
-    {noreply, State};
-
-command({command_sync, QueryText, Limit, QueryType}, State) ->
-    ClassName = case QueryType of
-        select -> "com.orientechnologies.orient.core.sql.query.OSQLSynchQuery";
-        command -> "com.orientechnologies.orient.core.sql.OCommandSQL";
-        script -> "com.orientechnologies.orient.core.command.script.OCommandScript"
+command({command, Query, sync}, State) ->
+    CommandPayload = case Query of
+        {select, QueryText, Limit, FetchPlan} ->
+            %% (class-name:string)(text:string)(non-text-limit:int)[(fetch-plan:string)](serialized-params:bytes[])
+            odi_bin:encode(
+                [string, string, integer, string, bytes],
+                ["q", QueryText, Limit, FetchPlan,
+                 <<>>]);  % TODO: support params
+        {command, Text} ->
+            %% (class-name:string)(text:string)(has-simple-parameters:boolean)(simple-paremeters:bytes[])(has-complex-parameters:boolean)(complex-parameters:bytes[])
+            odi_bin:encode([string, string, bool, bool], ["c", Text, false, false]);  % TODO: support params
+        {script, Language, Text} ->
+            %% (class-name:string)(language:string)(text:string)(has-simple-parameters:boolean)(simple-paremeters:bytes[])(has-complex-parameters:boolean)(complex-parameters:bytes[])
+            odi_bin:encode([string, string, string, bool, bool], ["s", Language, Text, false, false])  % TODO: support params
     end,
-    %TODO: different SQL Script command payload
-    CommandPayload = odi_bin:encode([string, string, integer, rawbytes],
-        [ClassName,
-        QueryText, Limit, <<0:?o_int, 0:?o_int, 0:?o_int>>]),
     sendRequest(State, ?O_COMMAND,
         [byte, bytes],
         [$s, CommandPayload]),
@@ -340,14 +298,15 @@ command({command_sync, QueryText, Limit, QueryType}, State) ->
 %generic_query:$s,CommandPayload("com.orientechnologies.orient.core.sql.OCommandSQL",QueryText)
 
 %Commits a transaction. This operation flushes all the pending changes to the server side.
-%   Request:  (tx-id:int)(using-tx-log:byte)[(operation-type:byte)(cluster-id:short)(cluster-position:long)(record-type:byte)<record-content>]*(0-byte indicating end-of-records)
-%   Response: (created-record-count:int)[(client-specified-cluster-id:short)(client-specified-cluster-position:long)(created-cluster-id:short)
-%       (created-cluster-position:long)]*(updated-record-count:int)[(updated-cluster-id:short)(updated-cluster-position:long)(new-record-version:int)]*
+%   Request: (transaction-id:int)(using-tx-log:boolean)(tx-entry)*(0-byte indicating end-of-records)
+%     tx-entry:  (1:byte)(operation-type:byte)(cluster-id:short)(cluster-position:long)(record-type:byte)(entry-content)
+%   Response: (created-record-count:int)[(client-specified-cluster-id:short)(client-specified-cluster-position:long)(created-cluster-id:short)(created-cluster-position:long)]*(updated-record-count:int)[(updated-cluster-id:short)(updated-cluster-position:long)(new-record-version:int)]*(count-of-collection-changes:int)[(uuid-most-sig-bits:long)(uuid-least-sig-bits:long)(updated-file-id:long)(updated-page-index:long)(updated-page-offset:int)]*
 %   Operations: [[OperationType, ClusterId, ClusterPosition, RecordType]]
 command({tx_commit, TxId, UsingTxLog, Operations}, State) ->
+    UnknownStuff = <<0:24>>,
     sendRequest(State, ?O_TX_COMMIT,
-        [integer, byte, {zero_end, [byte, short, long, byte]}],
-        [TxId, UsingTxLog, Operations]),
+        [integer, bool, {zero_end, rawbytes}, bytes],
+        [TxId, UsingTxLog, lists:map(fun encode_tx_operation/1, Operations), UnknownStuff]),
     {noreply, State};
 
 command(_Command, State) ->
@@ -358,7 +317,7 @@ command(_Command, State) ->
 pre_connect(State, Host, Opts) ->
     Timeout = proplists:get_value(timeout, Opts, 5000),
     Port = proplists:get_value(port, Opts, 2424),
-    SockOpts = [{active, false}, {packet, raw}, binary, {nodelay, true}],
+    SockOpts = [{active, true}, {packet, raw}, binary, {nodelay, true}],
     case gen_tcp:connect(Host, Port, SockOpts, Timeout) of
         {ok, Sock} -> {ok, State#state{mod = gen_tcp, sock = Sock, timeout = Timeout}};
         {error, _} = E -> E
@@ -371,6 +330,7 @@ sendRequest(#state{mod = Mod, sock = Sock, session_id = SessionId}, CommandType,
 
 % port_command() more efficient then gen_tcp:send()
 do_send(gen_tcp, Sock, Bin) ->
+    io:format("Sending: 0x~s~n", [hex:bin_to_hexstr(Bin)]),
     try erlang:port_command(Sock, Bin) of
         true ->
             ok
@@ -420,6 +380,7 @@ loop(#state{data = Data, timeout = Timeout} = State) -> %timeout = Timeout
         _ ->
             case byte_size(Data) > 0 of
                 true ->
+                    io:format("Received: 0x~s~n", [hex:bin_to_hexstr(Data)]),
                     case on_response(Cmd, Data, State) of
                         {fetch_more, State2} -> {noreply, State2, Timeout};
                         {noreply, #state{data = <<>>} = State2} -> {noreply, State2};
@@ -445,62 +406,59 @@ on_empty_response(Bin, State) ->
 on_simple_response(Bin, State, Format) ->
     <<Status:?o_byte, _SessionId:?o_int, Message/binary>> = Bin,
     case Status of
-        1 -> {ErrorInfo,Rest} = odi_bin:decode_error(Message),
+        1 ->
+            {ErrorInfo,Rest} = odi_bin:decode_error(Message),
             State2 = finish(State#state{data = Rest}, {error, ErrorInfo});
-        0 -> {Result, Rest} = odi_bin:decode(Format, Message),
+        0 ->
+            {Result, Rest} = odi_bin:decode(Format, Message),
             State2 = finish(State#state{data = Rest}, Result)
     end,
     {noreply, State2}.
 
-on_response(connect, Bin, #state{protocolVersion = ProtocolVersion, sock = Sock} = State) ->
-	case ProtocolVersion of
-		_ when ProtocolVersion == 0 ->
-			<<ProtocolVersion2:?o_short, Rest/binary>> = Bin,
-			State3 = State#state{protocolVersion = ProtocolVersion2, data = Rest};
-		_ ->
-			<<Status:?o_byte, _:?o_int, Message/binary>> = Bin,
-            case Status of
-                1 -> {ErrorInfo,Rest} = odi_bin:decode_error(Message),
-                    State2 = State#state{data = Rest},
-                    gen_tcp:close(Sock),
-                    State3 = finish(State2, {error, ErrorInfo});
-                0 -> <<SessionId:?o_int, Rest/binary>> = Message,
-                    State2 = State#state{session_id = SessionId, open_mode = connect, data = Rest},
-                    State3 = finish(State2, ok);
-                _ ->
-                    State2 = State#state{data = <<>>},
-                    gen_tcp:close(Sock),
-                    State3 = finish(State2, {error, error_server_response})
-            end
-		end,
+on_response(_Command, Bin, #state{open_mode = wait_version} = State) ->
+    <<Version:?o_short, Rest/binary>> = Bin,
+    io:format("Got version ~p~n", [Version]),
+    true = Version >= ?O_PROTO_VER,
+    {fetch_more, State#state{open_mode = wait_answer, data = Rest}};
+
+% Response: (session-id:int)(token:bytes)
+on_response(connect, Bin, #state{sock = Sock, open_mode = wait_answer} = State) ->
+    <<Status:?o_byte, _OldSessionId:?o_int, Message/binary>> = Bin,
+    case Status of
+        1 -> {ErrorInfo,Rest} = odi_bin:decode_error(Message),
+            State2 = State#state{data = Rest},
+            gen_tcp:close(Sock),
+            State3 = finish(State2, {error, ErrorInfo});
+        0 -> <<SessionId:?o_int, _Token:?o_int, Rest/binary>> = Message,
+            State2 = State#state{session_id = SessionId, open_mode = connect, data = Rest},
+            State3 = finish(State2, ok);
+        _ ->
+            State2 = State#state{data = <<>>},
+            gen_tcp:close(Sock),
+            State3 = finish(State2, {error, error_server_response})
+    end,
 	{noreply, State3};
 
-% Response: (session-id:int)(num-of-clusters:short)[(cluster-name:string)(cluster-id:short)(cluster-type:string)(cluster-dataSegmentId:short)](cluster-config:bytes)(orientdb-release:string)
-on_response(db_open, Bin, #state{protocolVersion = ProtocolVersion, sock = Sock} = State) ->
-	case ProtocolVersion of
-		_ when ProtocolVersion == 0 ->
-			<<ProtocolVersion2:?o_short, Rest/binary>> = Bin,
-			{noreply, State#state{protocolVersion = ProtocolVersion2, data = Rest}};
-		_ ->
-			<<Status:?o_byte, _:?o_int, Message/binary>> = Bin,
-            try
-                case Status of
-                    1 -> {ErrorInfo,Rest} = odi_bin:decode_error(Message),
-                        gen_tcp:close(Sock),
-                        {noreply, finish(State#state{data = Rest}, {error, ErrorInfo})};
-                    0 ->
-                        {{SessionId, {_NumOfClusters, ClusterParams}, ClusterConfig}, Rest}
-                            = odi_bin:decode([integer, {integer, [string, short, string]}, string], Message),
-                        {noreply, finish(State#state{session_id = SessionId, open_mode = db_open, data = Rest},
-                            {ClusterParams, ClusterConfig})};
-                     _ ->
-                        gen_tcp:close(Sock),
-                        {noreply, finish(State#state{data = <<>>}, {error, error_server_response, Bin})}
-                end
-            catch
-                _:_ -> {fetch_more, State}
-            end
-	end;
+% Response: (session-id:int)(token:bytes)(num-of-clusters:short)[(cluster-name:string)(cluster-id:short)](cluster-config:bytes)(orientdb-release:string)
+on_response(db_open, Bin, #state{sock = Sock, open_mode = wait_answer} = State) ->
+    <<Status:?o_byte, _OldSessionId:?o_int, Message/binary>> = Bin,
+    try
+        case Status of
+            1 -> {ErrorInfo,Rest} = odi_bin:decode_error(Message),
+                gen_tcp:close(Sock),
+                {noreply, finish(State#state{data = Rest}, {error, ErrorInfo})};
+            0 ->
+                {{SessionId, _Token, ClusterParams, ClusterConfig, _OrientdbRelease}, Rest}
+                    = odi_bin:decode([integer, bytes, {short, [string, short]}, bytes, string], Message),
+                {noreply, finish(State#state{session_id = SessionId, open_mode = db_open, data = Rest},
+                    {ClusterParams, ClusterConfig})};
+             _ ->
+                gen_tcp:close(Sock),
+                {noreply, finish(State#state{data = <<>>}, {error, error_server_response, Bin})}
+        end
+    catch
+        _:_ -> {fetch_more, State}
+    end;
 
 % Response: empty
 on_response(db_create, Bin, State) ->
@@ -512,11 +470,11 @@ on_response(db_close, _Bin, State) ->
 
 % Response: empty
 on_response(db_exist, Bin, State) ->
-    on_simple_response(Bin, State, [byte]);
+    on_simple_response(Bin, State, [bool]);
 
-% Response:(num-of-clusters:short)[(cluster-name:string)(cluster-id:short)(cluster-type:string)(cluster-dataSegmentId:short)]
+% Response: (num-of-clusters:short)[(cluster-name:string)(cluster-id:short)]
 on_response(db_reload, Bin, State) ->
-    on_simple_response(Bin, State, [{short, [string, short, string, short]}, string, string]);
+    on_simple_response(Bin, State, [{short, [string, short]}]);
 
 on_response(db_delete, Bin, State) ->
     on_empty_response(Bin, State);
@@ -535,118 +493,157 @@ on_response(datacluster_add, Bin, State) ->
 
 % Response: (delete-on-clientside:byte)
 on_response(datacluster_remove, Bin, State) ->
-    on_simple_response(Bin, State, [byte]);
+    on_simple_response(Bin, State, [bool]);
 
-% Response: (records-in-clusters:long)
-on_response(datacluster_count, Bin, State) ->
-    on_simple_response(Bin, State, [long]);
-
-% Response: (begin:long)(end:long)
-on_response(datacluster_datarange, Bin, State) ->
-    on_simple_response(Bin, State, [long, long]);
-
-% Response: (new-datasegment-id:int)
-on_response(datasegment_add, Bin, State) ->
-    on_simple_response(Bin, State, [int]);
-
-% Response: (succeeded:boolean)
-on_response(datasegment_remove, Bin, State) ->
-    on_simple_response(Bin, State, [byte]);
+% Response: (cluster-id:short)(cluster-position:long)(record-version:int)(count-of-collection-changes)[(uuid-most-sig-bits:long)(uuid-least-sig-bits:long)(updated-file-id:long)(updated-page-index:long)(updated-page-offset:int)]*
+on_response(record_create, Bin, State) ->
+    on_simple_response(Bin, State, [short, long, integer, {integer, [long, long, long, long, integer]}]);
 
 % Response: [(payload-status:byte)[(record-content:bytes)(record-version:int)(record-type:byte)]*]+
 on_response(record_load, Bin, State) ->
     <<Status:?o_byte, _SessionId:?o_int, Message/binary>> = Bin,
     try case Status of
-        1 -> {ErrorInfo,Rest} = odi_bin:decode_error(Message),
+        1 ->
+            {ErrorInfo,Rest} = odi_bin:decode_error(Message),
             {noreply, finish(State#state{data = Rest}, {error, ErrorInfo})};
-        0 -> <<PayloadStatus:?o_byte, Msg/binary>> = Message,
-            case PayloadStatus of
-                0 ->
-                    {noreply, finish(State#state{data = Msg}, null)};
-                _ ->
-                    {Result, Rest} = odi_bin:decode_record(Msg),
-                    {noreply, finish(State#state{data = Rest}, Result)}
-            end
+        0 ->
+            {Records, Rest} = decode_records_iterable(Message, []),
+            {noreply, finish(State#state{data = Rest}, Records)}
         end
     catch
-        _:_ -> {fetch_more, State}
+        X:Y ->
+            io:format("Error while parsing record_load response: ~p:~p~n", [X, Y]),
+            {fetch_more, State}
     end;
 
-% Response: (cluster-position:long)(record-version:int)
-on_response(record_create, Bin, State) ->
-    on_simple_response(Bin, State, [long]);
-
-% Response: (record-version:int)
+% Response: (record-version:int)(count-of-collection-changes)[(uuid-most-sig-bits:long)(uuid-least-sig-bits:long)(updated-file-id:long)(updated-page-index:long)(updated-page-offset:int)]*
 on_response(record_update, Bin, State) ->
-    on_simple_response(Bin, State, [integer]);
+    on_simple_response(Bin, State, [integer, {integer, [long, long, long, long, integer]}]);
 
-% Response: (payload-status:byte)
+% Response: (has-been-deleted:boolean)
 on_response(record_delete, Bin, State) ->
-    on_simple_response(Bin, State, [byte]);
+    on_simple_response(Bin, State, [bool]);
 
 % Response:
 % - synchronous commands: [(synch-result-type:byte)[(synch-result-content:?)]]+
-on_response(command_sync, Bin, State) ->
+on_response(command, Bin, State) ->
     <<Status:?o_byte, _SessionId:?o_int, Message/binary>> = Bin,
     try case Status of
         1 -> {ErrorInfo,Rest} = odi_bin:decode_error(Message),
             {noreply, finish(State#state{data = Rest}, {error, ErrorInfo})};
-        0 -> <<ResultType:?o_byte, Msg/binary>> = Message,
-            case ResultType of
-                $l ->   %list of records
-                    <<RecordsCount:?o_int, RecordsData/binary>> = Msg,
-                    {Records, Rest} = odi_bin:decode_record_list(RecordsData, RecordsCount, []),
-                    {noreply, finish(State#state{data = Rest}, Records)};
-                $n ->   %null result
-                    {noreply, finish(State#state{data = Msg}, null)};
-                $r ->   %single record returned
-                    {Record, Rest} = odi_bin:decode_linked_record(Msg),
-                    {noreply, finish(State#state{data = Rest}, Record)};
-                $c ->   %collection of records
-                    %TODO: decode collection of records
-                    {noreply, finish(State#state{data = Msg}, null)};
-                $a ->   %serialized result
-                    %TODO: serialized result
-                    {noreply, finish(State#state{data = Msg}, null)};
-                _ ->
-                    {noreply, finish(State#state{data = <<>>}, command_sync_decode_error)}
-            end
+        0 ->
+            {Result, <<0:?o_byte, Rest/binary>>} = decode_command_answer(Message),  %% TODO: why is there an extra 0 at the end?
+            {noreply, finish(State#state{data = Rest}, Result)}
         end
     catch
-        _:_ -> {fetch_more, State}
+        X:Y ->
+            io:format("Error while parsing command response: ~p:~p~n", [X, Y]),
+            {fetch_more, State}
     end;
 
-% Response:
-% - asynchronous commands: [(asynch-result-type:byte)[(asynch-result-content:?)]*](pre-fetched-record-size)[(pre-fetched-record)]*+
-on_response(command_async, Bin, State) ->
-    <<Status:?o_byte, _SessionId:?o_int, Message/binary>> = Bin,
-    try case Status of
-        1 -> {ErrorInfo,Rest} = odi_bin:decode_error(Message),
-            {noreply, finish(State#state{data = Rest}, {error, ErrorInfo})};
-        0 -> <<ResultType:?o_byte, RecordData/binary>> = Message,
-            case ResultType of
-                $1 ->   %TODO: iterate reading ResultType and RecordData
-                    {Record, Rest} = odi_bin:decode_linked_record(RecordData),
-                    {noreply, finish(State#state{data = Rest}, Record)};
-                $2 ->   %TODO: iterate reading ResultType and RecordData
-                    {Record, Rest} = odi_bin:decode_linked_record(RecordData),
-                    {noreply, finish(State#state{data = Rest}, Record)};
-                ResultType ->
-                    {noreply, finish(State#state{data = <<>>}, {null, ResultType})}
-            end
-        end
-    catch
-        _:_ -> {fetch_more, State}
-    end;
-
-% Response: (created-record-count:int)[(client-specified-cluster-id:short)(client-specified-cluster-position:long)
-%        (created-cluster-id:short)(created-cluster-position:long)]*
-%        (updated-record-count:int)[(updated-cluster-id:short)(updated-cluster-position:long)(new-record-version:int)]*
+% Response: Response: (created-record-count:int)[
+%                       (client-specified-cluster-id:short)(client-specified-cluster-position:long)
+%                       (created-cluster-id:short)(created-cluster-position:long)
+%                      ]*
+%                     (updated-record-count:int)[
+%                       (updated-cluster-id:short)(updated-cluster-position:long)
+%                       (new-record-version:int)
+%                     ]*
+%                     (count-of-collection-changes:int)[
+%                       (uuid-most-sig-bits:long)(uuid-least-sig-bits:long)
+%                       (updated-file-id:long)(updated-page-index:long)(updated-page-offset:int)
+%                     ]*
 on_response(tx_commit, Bin, State) ->
-    on_simple_response(Bin, State, [integer, short, long]);
+    on_simple_response(Bin, State, [{integer, [short, long, short, long]},
+                                    {integer, [short, long, integer]},
+                                    {integer, [longlong, long, long, integer]}]);
 
 on_response(_Command, _Bin, State) ->
     {error, State}.
 
-% Error result: {stop, normal, finish(State, {error, Why})};
 
+encode_tx_operation({update, ClusterId, ClusterPosition, RecordType, Version, UpdateContent, RecordContent}) ->
+    Base = encode_base_tx_operation(1, ClusterId, ClusterPosition, RecordType),
+    %% (version:int)(update-content:boolean)(record-content:bytes)  (wrong order...)
+    odi_bin:encode([rawbytes, integer, bytes, bool], [Base, Version, RecordContent, UpdateContent]);
+encode_tx_operation({delete, ClusterId, ClusterPosition, RecordType, Version}) ->
+    Base = encode_base_tx_operation(2, ClusterId, ClusterPosition, RecordType),
+    %% (version:int)
+    odi_bin:encode([rawbytes, integer], [Base, Version]);
+encode_tx_operation({create, ClusterId, ClusterPosition, RecordType, RecordContent}) ->
+    Base = encode_base_tx_operation(3, ClusterId, ClusterPosition, RecordType),
+    %% (record-content:bytes)
+    odi_bin:encode([rawbytes, bytes], [Base, RecordContent]).
+
+encode_base_tx_operation(OperationType, ClusterId, ClusterPosition, RecordType) ->
+    odi_bin:encode(
+        [byte, byte, short, long, byte],
+        [1, OperationType, ClusterId, ClusterPosition, odi_bin:encode_record_type(RecordType)]).
+
+
+decode_records_iterable(<<0:?o_byte, Msg/binary>>, Acc) ->
+    {lists:reverse(Acc), Msg};
+decode_records_iterable(<<1:?o_byte, Msg/binary>>, Acc) ->
+    {{RecordType, RecordVersion, RecordBin}, NextRecord} = odi_bin:decode([byte, integer, bytes], Msg),
+    {Class, Data, <<>>} = odi_record_binary:decode_record(RecordBin),
+    decode_records_iterable(NextRecord,
+        [{true, odi_bin:decode_record_type(RecordType), RecordVersion, Class, Data} | Acc]);
+decode_records_iterable(<<2:?o_byte, Msg/binary>>, Records) ->
+    {Record, NextRecord} = decode_record(Msg),
+    decode_records_iterable(NextRecord, [Record | Records]).
+
+decode_record(<<0:?o_short, Bin/binary>>) ->
+    {{RecordType, ClusterId, RecordPosition, RecordVersion, RecordBin}, Rest} = odi_bin:decode([byte, short, long, integer, bytes], Bin),
+    {Class, Data, <<>>} = odi_record_binary:decode_record(RecordBin),
+    {{{ClusterId, RecordPosition}, odi_bin:decode_record_type(RecordType), RecordVersion, Class, Data}, Rest};
+decode_record(<<-2:?o_short, Rest/binary>>) ->
+    {null, Rest};
+decode_record(<<-3:?o_short, Bin/binary>>) ->
+    {{ClusterId, RecordPosition}, Rest} = odi_bin:decode([short, long], Bin),
+    {{{ClusterId, RecordPosition}, null, null, null, null}, Rest}.
+
+%% 00
+%% 00000081
+%% 72 == r
+%% 0000 full record
+%% 64 RecordType
+%% 0009 ClusterId
+%% 00000000 00000000 RecordPosition
+%% 00000001 RecordVersion
+%% 0000000F 0002 5602 7800 0000 0B04 0040 9000 00
+%% 00
+decode_command_answer(<<$n:?o_byte, Rest/binary>>) ->
+    {[], Rest};
+decode_command_answer(<<$l:?o_byte, Num:?o_int, Rest/binary>>) ->
+    decode_record_list(Num, Rest, []);
+decode_command_answer(<<$s:?o_byte, Num:?o_int, Rest/binary>>) ->
+    decode_record_list(Num, Rest, []);
+decode_command_answer(<<$i:?o_byte, Rest/binary>>) ->
+    decode_records_iterable(Rest, []);
+decode_command_answer(<<$r:?o_byte, Bin/binary>>) ->
+    {Record, Rest} = decode_record(Bin),
+    {[Record], Rest}.
+%% TODO: type=$w
+
+decode_record_list(0, Rest, Acc) ->
+    {lists:reverse(Acc), Rest};
+decode_record_list(N, Bin, Acc) ->
+    {Record, Rest} = decode_record(Bin),
+    decode_record_list(N - 1, Rest, [Record | Acc]).
+
+-ifdef(TEST).
+-include_lib("eunit/include/eunit.hrl").
+
+decode_record_load_test() ->
+    %% one record and a linked record
+    Bin = <<1,100,0,0,0,2,0,0,0,29,0,2,86,8,111,117,116,95,0,0,0,14,
+        22,0,1,0,0,0,1,0,17,0,0,0,0,0,0,0,0,
+        2,0,0,100,0,17,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,25,0,2,69,6,111,
+        117,116,0,0,0,21,13,4,105,110,0,0,0,
+        23,13,0,20,0,18,0,0>>,
+    {[
+        {true, document, 2, "V", #{"out_" := {linkbag, [{17, 0}]}}},
+        {{17, 0}, document, 1, "E", #{"in" := {link, {9, 0}}, "out" := {link, {10, 0}}}}
+    ], <<>>} = decode_records_iterable(Bin, []).
+
+-endif.

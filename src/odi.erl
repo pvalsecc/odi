@@ -3,31 +3,25 @@
 -module(odi).
 
 -export([start_link/0,
-         connect/4, connect/5,
+         connect/4,
          close/1,
          db_open/5,
-         db_open/6,
-         db_create/4,
+         db_create/5,
          db_close/1,
-         db_exist/2,
+         db_exist/3,
          db_reload/1,
          db_delete/3,
          db_size/1,
          db_countrecords/1,
-         datacluster_add/5,
+         datacluster_add/3,
          datacluster_remove/2,
-         datacluster_count/2,
-         datacluster_datarange/2,
-         datasegment_add/3,
-         datasegment_remove/2,
          record_create/5,
-         record_load/3,
-         record_update/6,
+         record_load/4,
+         record_update/7,
          record_delete/4,
-         query_async/4,
-         query_sync/3,
+         query/4,
          command/2,
-         script/2,
+         script/3,
          tx_commit/4]).
 
 -include("../include/odi.hrl").
@@ -42,6 +36,8 @@ start_link() ->
 %This is the first operation requested by the client when it needs to work with the server instance without openning a database.
 %Returns the session_id:integer of the client.
 %Opts (proplists) = port (default 2424), timeout (default 5000 ms).
+-spec connect(Host::string(), Username::string(), Password::string(),
+              Opts::[{timeout, Timeout::integer()} | {port, Port::integer()}]) -> {ok, Con::pid()}.
 connect(Host, Username, Password, Opts) ->
     {ok, C} = odi_sock:start_link(),
     connect(C, Host, Username, Password, Opts).
@@ -51,118 +47,127 @@ connect(C, Host, Username, Password, Opts) ->
 
 %This is the first operation the client should call. It opens a database on the remote OrientDB Server.
 %Returns the Session-Id to being reused for all the next calls and the list of configured clusters.
+-spec db_open(Host::string(), Dbname::string(), Username::string(), Password::string(),
+              Opts::[{timeout, Timeout::integer()} | {port, Port::integer()}]) ->
+      {Clusters::[{ClusterName::string(), ClusterId::integer()}], Con::pid()}.
 db_open(Host, DBName, Username, Password, Opts) ->
     {ok, C} = odi_sock:start_link(),
     db_open(C, Host, DBName, Username, Password, Opts).
+
 db_open(C, Host, DBName, Username, Password, Opts) ->
     call_conn(C, {db_open, Host, DBName, Username, Password, Opts}).
 
 %Creates a database in the remote OrientDB server instance.
 %Works in connect-mode.
-db_create(C, DatabaseName, DatabaseType, StorageType) ->
-    call(C, {db_create, DatabaseName, DatabaseType, StorageType}).
+-spec db_create(C::pid(), DatabaseName::string(), DatabaseType::string(), StorageType::string(),
+                BackupPath::string()) -> ok.
+db_create(C, DatabaseName, DatabaseType, StorageType, BackupPath) ->
+    call(C, {db_create, DatabaseName, DatabaseType, StorageType, BackupPath}).
 
 %Closes the database and the network connection to the OrientDB Server instance.
 %No return is expected. The socket is also closed.
+-spec db_close(C::pid()) -> {stop, closed}.
 db_close(C) ->
     call(C, {db_close}).
 
 %Asks if a database exists in the OrientDB Server instance. It returns true (non-zero) or false (zero).
 %Works in connect-mode.
-db_exist(C, DatabaseName) ->
-    to_bool(call(C, {db_exist, DatabaseName})).
+-spec db_exist(C::pid(), DatabaseName::string(), StorageType::string()) -> boolean().
+db_exist(C, DatabaseName, StorageType) ->
+    call(C, {db_exist, DatabaseName, StorageType}).
 
 %Reloads database information.
+-spec db_reload(C::pid()) -> [{ClusterName::string(), ClusterId::integer()}].
 db_reload(C) ->
     call(C, {db_reload}).
 
 %Removes a database from the OrientDB Server instance.
 %Works in connect-mode.
+-spec db_delete(C::pid(), DatabaseName::string(), StorageType::string()) -> ok.
 db_delete(C, DatabaseName, ServerStorageType) ->
     call(C, {db_delete, DatabaseName, ServerStorageType}).
 
 %Returns size of the opened database.
+-spec db_size(C::pid()) -> integer().
 db_size(C) ->
     call(C, {db_size}).
 
 %Asks for the number of records in a database in the OrientDB Server instance.
+-spec db_countrecords(C::pid()) -> integer().
 db_countrecords(C) ->
     call(C, {db_countrecords}).
 
 %Add a new data cluster.
-datacluster_add(C, Type, Name, Location, DataSegmentName) ->
-    call(C, {datacluster_add, Type, Name, Location, DataSegmentName}).
+-spec datacluster_add(C::pid(), Name::string(), ClusterId::integer()) -> integer().
+datacluster_add(C, Name, ClusterId) ->
+    call(C, {datacluster_add, Name, ClusterId}).
 
 %Remove a cluster.
+-spec datacluster_remove(C::pid(), ClusterId::integer()) -> boolean().
 datacluster_remove(C, ClusterId) ->
     call(C, {datacluster_remove, ClusterId}).
-
-%Returns summary count of records in one or more clusters.
-%   ClustersIds = [cluster_id1, ...]
-datacluster_count(C, ClustersIds) ->
-    call(C, {datacluster_count, ClustersIds}).
-
-%Returns the range of record ids for a cluster.
-datacluster_datarange(C, ClusterId) ->
-    call(C, {datacluster_datarange, ClusterId}).
-
-%Add a new data segment.
-datasegment_add(C, Name, Location) ->
-    call(C, {datasegment_add, Name, Location}).
-
-%Drop a data segment.
-datasegment_remove(C, Name) ->
-    call(C, {datasegment_remove, Name}).
 
 %Create a new record. Returns the position in the cluster of the new record.
 %New records can have version > 0 (since v1.0) in case the RID has been recycled.
 %   Response: (ClusterPosition:long)
 record_create(C, ClusterId, {Class, Fields}, RecordType, Mode) ->
-    record_create(C, ClusterId, odi_doc:encode(Class, Fields), RecordType, Mode);
+    record_create(C, ClusterId, odi_record_binary:encode_record(Class, Fields), RecordType, Mode);
 record_create(C, ClusterId, RecordContent, RecordType, Mode) ->
     call(C, {record_create, ClusterId, RecordContent, RecordType, Mode}).
 
 %Load a record by RecordID, according to a fetch plan
-%   Response: [(payload-status:byte)[(record-content:bytes)(record-version:int)(record-type:byte)]*]+
-record_load(C, {ClusterId, ClusterPosition}, FetchPlan) ->
+%   Response: [{IsResultSetBool, RecordType, RecordVersion, Class, Data}]
+record_load(C, {ClusterId, ClusterPosition}, FetchPlan, IgnoreCache) ->
     FetchPlan2 = case FetchPlan of default -> "*:1"; _ -> FetchPlan end,
-    call(C, {record_load, ClusterId, ClusterPosition, FetchPlan2}).
+    call(C, {record_load, ClusterId, ClusterPosition, FetchPlan2, IgnoreCache}).
 
 %Update a record. Returns the new record's version.
 %   RecordVersion: current record version
 %   RecordType: raw, flat, document
 %   Mode: sync, async
 %Returns NewRecordVersion:integer
-record_update(C, RID, {Class, Fields}, RecordVersion, RecordType, Mode) ->
-    record_update(C, RID, odi_doc:encode(Class, Fields), RecordVersion, RecordType, Mode);
-record_update(C, {ClusterId, ClusterPosition}, RecordContent, RecordVersion, RecordType, Mode) ->
-    call(C, {record_update, ClusterId, ClusterPosition, RecordContent, RecordVersion, RecordType, Mode}).
+record_update(C, RID, UpdateContent, {Class, Fields}, RecordVersion, RecordType, Mode) ->
+    record_update(C, RID, UpdateContent, odi_record_binary:encode_record(Class, Fields), RecordVersion, RecordType, Mode);
+record_update(C, {ClusterId, ClusterPosition}, UpdateContent, RecordContent, RecordVersion, RecordType, Mode) ->
+    call(C, {record_update, ClusterId, ClusterPosition, UpdateContent, RecordContent, RecordVersion, RecordType, Mode}).
 
 %Delete a record by its RecordID. During the optimistic transaction the record will be deleted only if the versions match.
 %Returns true if has been deleted otherwise false.
 record_delete(C, {ClusterId, ClusterPosition}, RecordVersion, Mode) ->
-    to_bool(call(C, {record_delete, ClusterId, ClusterPosition, RecordVersion, Mode})).
+    call(C, {record_delete, ClusterId, ClusterPosition, RecordVersion, Mode}).
 
-%Syncronous SQL query (SELECT or TRAVERSE).
-query_sync(C, SQL, Limit) ->
-    call(C, {command_sync, SQL, Limit, select}).
-
-%Asyncronous SQL query, not fully implemented
-query_async(C, SQL, Limit, FetchPlan) ->
-    call(C, {command_async, SQL, Limit, FetchPlan}).
+%SQL query (SELECT or TRAVERSE).
+query(C, SQL, Limit, FetchPlan) ->
+    FetchPlan2 = case FetchPlan of default -> "*:1"; _ -> FetchPlan end,
+    call(C, {command, {select, SQL, Limit, FetchPlan2}, sync}).
 
 %Syncronous SQL command.
+-spec command(C::pid(), SQL::string()) -> list().
 command(C, SQL) ->
-    call(C, {command_sync, SQL, -1, command}).
+    call(C, {command, {command, SQL}, sync}).
 
-%Syncronous SQL command.
-script(C, JavaScript) ->
-    call(C, {command_sync, JavaScript, -1, script}).
+%Syncronous SQL script.
+script(C, Language, Code) ->
+    call(C, {command, {script, Language, Code}, sync}).
 
 %Commits a transaction. This operation flushes all the pending changes to the server side.
 %   Operations: [{OperationType, ClusterId, ClusterPosition, RecordType}]
+-type record()::{Class::string(), Fields::#{}}.
+-type tx_operation()::{update, ClusterId::integer(), ClusterPosition::integer(), RecordType::raw|flat|document,
+                               Version::integer(), UpdateContent::boolean(), Record::record()} |
+                      {delete, ClusterId::integer(), ClusterPosition::integer(), RecordType::raw|flat|document,
+                               Version::integer()} |
+                      {create, ClusterId::integer(), ClusterPosition::integer(), RecordType::raw|flat|document,
+                               Record::record()}.
+-spec tx_commit(C::pid(), TxId::integer(), UsingLog::boolean(), Operations::[tx_operation()]) ->
+  {CreatedRecords::[{ClientSpecifiedClusterId::integer(), ClientSpecifiedClusterPosition::number(),
+                     CreatedClusterId::number(), CreatedClusterPosition::number()}],
+   UpdatedRecords::[{UpdatedClusterId::number(), UpdatedClusterPosition::number(),
+                     NewRecordVersion::integer()}],
+   CollectionChanges::[{Uuid::number(), UpdatedFileId::number(), UpdatedPageIndex::number(),
+                        UpdatedPageOffset ::number()}]}.
 tx_commit(C, TxId, UsingTxLog, Operations) ->
-    call(C, {tx_commit, TxId, UsingTxLog, Operations}).
+    call(C, {tx_commit, TxId, UsingTxLog, lists:map(fun encode_operation_record/1, Operations)}).
 
 close(C) ->
     odi_sock:close(C).
@@ -179,9 +184,12 @@ call(C, Command) ->
         R -> R
     end.
 
-to_bool(Num) ->
-    case Num of
-        _ when Num > 0 -> true;
-        _ when Num == 0 -> false;
-        Error -> Error
-    end.
+
+encode_operation_record({update, ClusterId, ClusterPosition, RecordType, Version, UpdateContent,
+                         {Class, Fields}}) ->
+  {update, ClusterId, ClusterPosition, RecordType, Version, UpdateContent,
+   odi_record_binary:encode_record(Class, Fields)};
+encode_operation_record({delete, _ClusterId, _ClusterPosition, _RecordType, _Version} = Record) ->
+  Record;
+encode_operation_record({create, ClusterId, ClusterPosition, RecordType, {Class, Fields}}) ->
+  {create, ClusterId, ClusterPosition, RecordType, odi_record_binary:encode_record(Class, Fields)}.

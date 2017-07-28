@@ -1,0 +1,8 @@
+[{<<"hex">>,
+  {git,"https://github.com/b/hex.git",
+       {ref,"967f059ea49e45b7d0d82e2e1177ef860f5ec4bd"}},
+  0},
+ {<<"small_ints">>,
+  {git,"https://github.com/whatyouhide/small_ints.git",
+       {ref,"c80501a65ed98ed7b9f03cd03c93641c2c5d6ef9"}},
+  0}].

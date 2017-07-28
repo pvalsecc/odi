@@ -1,0 +1,138 @@
+%%%-------------------------------------------------------------------
+%%% @author patrick
+%%% @copyright (C) 2017, <COMPANY>
+%%% @doc
+%%%
+%%% @end
+%%% Created : 31. Jul 2017 14:22
+%%%-------------------------------------------------------------------
+-module(odi_open_db_SUITE).
+-include_lib("common_test/include/ct.hrl").
+
+%% API
+-export([all/0, init_per_testcase/2, end_per_testcase/2]).
+
+-export([stats/1, record/1, query/1, command/1, tx/1]).
+
+all() ->
+    [stats, record, query, command, tx].
+
+init_per_testcase(_TestCase, Config) ->
+    {ok, Admin} = odi:connect("localhost", "root", "root", []),
+    ok = odi:db_create(Admin, "test", "graph", "plocal", null),
+    ok = odi:close(Admin),
+    {{Clusters, null}, Con} = odi:db_open("localhost", "test", "root", "root", []),
+    [{con, Con}, {clusters, Clusters} | Config].
+
+stats(Config) ->
+    Con = ?config(con, Config),
+    Clusters = odi:db_reload(Con),
+    true = is_list(Clusters),
+    true = length(Clusters) > 0,
+    Size = odi:db_size(Con),
+    true = Size > 0,
+    NbRecords = odi:db_countrecords(Con),
+    true = NbRecords > 0,
+    NewClusterNum = odi:datacluster_add(Con, "toto", -1),
+    true = odi:datacluster_remove(Con, NewClusterNum).
+
+record(Config) ->
+    Con = ?config(con, Config),
+    Clusters = ?config(clusters, Config),
+    {_, VClusterId} = lists:keyfind(<<"v">>, 1, Clusters),
+    {_, EClusterId} = lists:keyfind(<<"e">>, 1, Clusters),
+
+    Data1 = #{"toto" => {integer, 42}, "tutu" => {string, "tutu"}},
+    {VClusterId, RecordPos1, 1, []} = odi:record_create(Con, VClusterId, {"V", Data1}, document, sync),
+
+    Data2 = #{"x" => {double, 4.5}},
+    {VClusterId, RecordPos2, 1, []} = odi:record_create(Con, VClusterId, {"V", Data2}, document, sync),
+
+    Data3 = #{"in" => {link, {VClusterId, RecordPos1}}, "out" => {link, {VClusterId, RecordPos2}}},
+    {EClusterId, RecordPos3, 1, []} = odi:record_create(Con, EClusterId, {"E", Data3}, document, sync),
+
+    Data1b = #{"out_" => {linkbag, [{EClusterId, RecordPos3}]}},
+    Data1final = maps:merge(Data1, Data1b),
+    {2, []} = odi:record_update(Con, {VClusterId, RecordPos1}, false, {"V", Data1final}, 1, document, sync),
+
+    Data2b = #{"in_" => {linkbag, [{EClusterId, RecordPos3}]}},
+    Data2final = maps:merge(Data2, Data2b),
+    {2, []} = odi:record_update(Con, {VClusterId, RecordPos2}, false, {"V", Data2final}, 1, document, sync),
+
+    Result = odi:record_load(Con, {VClusterId, RecordPos1}, "*:2", false),
+    io:format("Read record: ~p~n", [Result]),
+    {true, document, 2, "V", Data1final} =
+        lists:keyfind(true, 1, Result),
+    {{VClusterId, RecordPos2}, document, 2, "V", Data2final} =
+        lists:keyfind({VClusterId, RecordPos2}, 1, Result),
+    {{EClusterId, RecordPos3}, document, 1, "E", Data3} =
+        lists:keyfind({EClusterId, RecordPos3}, 1, Result),
+    3 = length(Result),
+
+    true = odi:record_delete(Con, {VClusterId, RecordPos2}, 2, sync).
+
+query(Config) ->
+    Con = ?config(con, Config),
+
+    Results0 = odi:query(Con, "select from V", -1, default),
+    [] = Results0,
+
+    Data1 = #{"toto" => {integer, 42}, "tutu" => {string, "tutu"}},
+    {VClusterId1, RecordPos1, 1, []} = odi:record_create(Con, -1, {"V", Data1}, document, sync),
+
+    Results1 = odi:query(Con, "select from V", -1, default),
+    {{VClusterId1, RecordPos1}, document, 1, "V", Data1} = lists:keyfind({VClusterId1, RecordPos1}, 1, Results1),
+    1 = length(Results1),
+
+    Data2 = #{"x" => {double, 4.5}},
+    {VClusterId2, RecordPos2, 1, []} = odi:record_create(Con, -1, {"V", Data2}, document, sync),
+
+    Results2 = odi:query(Con, "select from V", -1, default),
+    {{VClusterId1, RecordPos1}, document, 1, "V", Data1} = lists:keyfind({VClusterId1, RecordPos1}, 1, Results2),
+    {{VClusterId2, RecordPos2}, document, 1, "V", Data2} = lists:keyfind({VClusterId2, RecordPos2}, 1, Results2),
+    2 = length(Results2).
+
+command(Config) ->
+    Con = ?config(con, Config),
+
+    Data = #{"x" => {float, 4.5}},
+    Result = odi:command(Con, "INSERT INTO V (x) VALUES (4.5)"),
+    [{{ClusterId, RecordPos}, document, 1, "V", Data}] = Result,
+
+    Result2 = odi:query(Con, "select from V", -1, default),
+    [{{ClusterId, RecordPos}, document, 1, "V", Data}] = Result2.
+
+%% TODO: test script
+
+tx(Config) ->
+    Con = ?config(con, Config),
+
+    Data1 = #{"toto" => {integer, 42}, "tutu" => {string, "tutu"}},
+    Data2 = #{"x" => {double, 4.5}},
+    ResultT1 = odi:tx_commit(Con, 1, true, [
+        {create, -1, -1, document, {"V", Data1}},
+        {create, -1, -2, document, {"V", Data2}}
+    ]),
+    {[
+        {-1, -1, VClusterId1, RecordPos1},
+        {-1, -2, VClusterId2, RecordPos2}
+     ],
+     _Update, []} = ResultT1,
+
+    Data1b = Data1#{"toto" => {integer, 43}},
+    ResultT2 = odi:tx_commit(Con, 2, true, [
+        {update, VClusterId1, RecordPos1, document, 1, true, {"V", Data1b}},
+        {delete, VClusterId2, RecordPos2, document, 1}
+    ]),
+    {[], [{VClusterId1, RecordPos1, 2}], []} = ResultT2,
+
+    ResultsReadBack = odi:query(Con, "select from V", -1, default),
+    [{{VClusterId1, RecordPos1}, document, 2, "V", Data1b}] = ResultsReadBack.
+
+
+end_per_testcase(_TestCase, Config) ->
+    Con = ?config(con, Config),
+    {stop, closed} = odi:db_close(Con),
+    {ok, Admin} = odi:connect("localhost", "root", "root", []),
+    ok = odi:db_delete(Admin, "test", "plocal"),
+    ok = odi:close(Admin).

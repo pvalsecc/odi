@@ -13,7 +13,7 @@
          encode_record_vc/1,
          decode_linked_record/1,
          decode_record_list/3,
-         switch/3]).
+         mode_to_byte/1]).
 
 -include("../include/odi.hrl").
 
@@ -54,12 +54,13 @@ decode(byte, <<N:?o_byte, Rest/binary>>)    -> {N, Rest};
 decode(short, <<N:?o_short, Rest/binary>>)    -> {N, Rest};
 decode(integer, <<N:?o_int, Rest/binary>>)    -> {N, Rest};
 decode(long, <<N:?o_long, Rest/binary>>)    -> {N, Rest};
+decode(longlong, <<N:?o_longlong, Rest/binary>>) -> {N, Rest};
 decode(float, <<N:?o_float, Rest/binary>>)   -> {N, Rest};
 decode(double, <<N:?o_double, Rest/binary>>)   -> {N, Rest};
 decode(bytes, <<-1:?o_int, Rest/binary>>) ->
     {null, Rest};
-decode(bytes, <<Len:?o_int, Rest/binary>>) ->
-    {binary:part(Rest, 0, Len), binary:part(Rest, Len, byte_size(Rest)-Len)};
+decode(bytes, <<Len:?o_int, Bytes:Len/binary, Rest/binary>>) ->
+    {Bytes, Rest};
 decode(string, <<-1:?o_int, Rest/binary>>) ->
     {null, Rest};
 decode(string, Bin) ->
@@ -93,7 +94,7 @@ decode_tuples(CountType, TypeList, Bin) ->
     Error -> Error
   end.
 decode_tuples(0, _TypeList, Bin, ValuesAcc) ->
-	{{length(ValuesAcc), lists:reverse(ValuesAcc)}, Bin};
+	{lists:reverse(ValuesAcc), Bin};
 decode_tuples(Count, _TypeList, Bin, _ValuesAcc) when Count<0 ->
 	{[], Bin};
 decode_tuples(Count, TypeList, Bin, ValuesAcc) ->
@@ -196,7 +197,6 @@ decode_linked_record(<<Status:?o_short, Data/binary>>) ->
 decode_linked_record(<<Data/binary>>) ->
   {{record_decoding_error, Data}}. %incomplete or corrupt data - generates exception
 
-switch(true, TrueExpr, _FalseExpr) ->
-    TrueExpr;
-switch(_, _TrueExpr, FalseExpr) ->
-    FalseExpr.
+mode_to_byte(sync) -> 0;
+mode_to_byte(async) -> 1;
+mode_to_byte(no_response) -> 2.

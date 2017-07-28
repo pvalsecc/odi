@@ -1,6 +1,6 @@
 ## OrientDB Database Interface for Erlang
 
-Tested on OrientDB version 1.5.0.
+Tested on OrientDB version 2.2.x.
 
 ### Connect without database
 
@@ -74,7 +74,7 @@ Example:
 
 ### Add record
 
-  odi:record_create(C, ClusterId, RecordContent, RecordType, Mode).
+  odi:record_create(C, ClusterId, {Class, Fields}, RecordType, Mode).
 
   Parameters:
 
@@ -86,11 +86,11 @@ Example:
 
   Example:
 
-    Position = odi:record_create(C, 23, {<<"Country">>, [{<<"name">>, <<"Japan">>}]}, document, sync).
+    Position = odi:record_create(C, 0, {"Country", #{name => "Japan"}}, document, sync).
 
 ### Update record
 
-  odi:record_update(C, RID, RecordContent, RecordVersion, RecordType, Mode).
+  odi:record_update(C, RID, UpdateContent, RecordContent, RecordVersion, RecordType, Mode).
 
   Returns:
 
@@ -98,25 +98,23 @@ Example:
 
   Example:
 
-    odi:record_update(C,{23,171},{<<"Country">>, [{<<"name">>, <<"Japan">>}]},6, document,sync).
+    odi:record_update(C,{23,171}, true, {<<"Country">>, [{<<"name">>, <<"Japan">>}]},6, document,sync).
 
 ### Load record
 
-  odi:record_load(C, RID, FetchPlan).
+  odi:record_load(C, RID, FetchPlan, IgnoreCache).
 
   Parameters:
 
- - FetchPlan  - fetch plan controls whitch linked records will be returned, default meens "*:1".
+ - FetchPlan  - fetch plan controls whitch linked records will be returned, default means "*:1".
 
   Returns:
 
-    {RecordType , RecordVersion, RecordContent, LinkedRecords}
-
-    LinkedRecords = [{RID, RecordType, RecordVersion, RecordContent}]
+    [{IsResultSetBool, RecordType, RecordVersion, Class, Data}]
 
   Example:
 
-    odi:record_load(C,{22,1},default).
+    odi:record_load(C,{22,1},default, false).
 
 ### Delete record
 
@@ -141,10 +139,6 @@ Example:
  + odi:db_countrecords(C).
  + odi:datacluster_add(C, Type, Name, Location, DataSegmentName).
  + odi:datacluster_remove(C, ClusterId).
- + odi:datacluster_count(C, [ClusterId]).
- + odi:datacluster_datarange(C, ClusterId).
- + odi:datasegment_add(C, Name, Location).
- + odi:datasegment_remove(C, Name).
  + odi:query_async/4 will be implemented later
  + odi:tx_commit/4 will be implemented later
 
