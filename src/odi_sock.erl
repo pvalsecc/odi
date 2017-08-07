@@ -14,6 +14,7 @@
 -export([on_response/3, command/2]).
 
 -include("../include/odi.hrl").
+-include("odi_debug.hrl").
 
 -record(state, {mod,    %socket module: gen_tcp or ssl(unsupported)
                 sock,   %opened socket
@@ -330,7 +331,7 @@ sendRequest(#state{mod = Mod, sock = Sock, session_id = SessionId}, CommandType,
 
 % port_command() more efficient then gen_tcp:send()
 do_send(gen_tcp, Sock, Bin) ->
-    io:format("Sending: 0x~s~n", [hex:bin_to_hexstr(Bin)]),
+    ?odi_debug("Sending: 0x~s~n", [hex:bin_to_hexstr(Bin)]),
     try erlang:port_command(Sock, Bin) of
         true ->
             ok
@@ -380,7 +381,7 @@ loop(#state{data = Data, timeout = Timeout} = State) -> %timeout = Timeout
         _ ->
             case byte_size(Data) > 0 of
                 true ->
-                    io:format("Received: 0x~s~n", [hex:bin_to_hexstr(Data)]),
+                    ?odi_debug("Received: 0x~s~n", [hex:bin_to_hexstr(Data)]),
                     case on_response(Cmd, Data, State) of
                         {fetch_more, State2} -> {noreply, State2, Timeout};
                         {noreply, #state{data = <<>>} = State2} -> {noreply, State2};
@@ -417,7 +418,7 @@ on_simple_response(Bin, State, Format) ->
 
 on_response(_Command, Bin, #state{open_mode = wait_version} = State) ->
     <<Version:?o_short, Rest/binary>> = Bin,
-    io:format("Got version ~p~n", [Version]),
+    ?odi_debug("Got version ~p~n", [Version]),
     true = Version >= ?O_PROTO_VER,
     {fetch_more, State#state{open_mode = wait_answer, data = Rest}};
 
@@ -512,9 +513,10 @@ on_response(record_load, Bin, State) ->
         end
     catch
         X:Y ->
-            io:format("Error while parsing record_load response: ~p:~p~n", [X, Y]),
+            ?odi_debug("Error while parsing record_load response: ~p:~p~n~p~n", [X, Y, erlang:get_stacktrace()]),
             {fetch_more, State}
     end;
+
 
 % Response: (record-version:int)(count-of-collection-changes)[(uuid-most-sig-bits:long)(uuid-least-sig-bits:long)(updated-file-id:long)(updated-page-index:long)(updated-page-offset:int)]*
 on_response(record_update, Bin, State) ->
@@ -532,12 +534,12 @@ on_response(command, Bin, State) ->
         1 -> {ErrorInfo,Rest} = odi_bin:decode_error(Message),
             {noreply, finish(State#state{data = Rest}, {error, ErrorInfo})};
         0 ->
-            {Result, <<0:?o_byte, Rest/binary>>} = decode_command_answer(Message),  %% TODO: why is there an extra 0 at the end?
-            {noreply, finish(State#state{data = Rest}, Result)}
+            {Results, Rest} = decode_command_answer(Message),
+            {noreply, finish(State#state{data = Rest}, Results)}
         end
     catch
         X:Y ->
-            io:format("Error while parsing command response: ~p:~p~n", [X, Y]),
+            ?odi_debug("Error while parsing command response: ~p:~p~n~p~n", [X, Y, erlang:get_stacktrace()]),
             {fetch_more, State}
     end;
 
@@ -581,11 +583,17 @@ encode_base_tx_operation(OperationType, ClusterId, ClusterPosition, RecordType) 
         [1, OperationType, ClusterId, ClusterPosition, odi_bin:encode_record_type(RecordType)]).
 
 
+%%01
+%%64 == d   recordType
+%%0000003B = 59  version
+%%000023A9  recordLength
+%% 00001A736368656D6156657273696F6E0000004B010E636C61737365730000004C0B20676C6F62616C50726F7065727469657300001F590A18626C6F62436C757374657273000023A70B000814170900086E616D6500000127071273686F72744E616D650000000000166465736372697074696F6E00000000002064656661756C74436C757374657249640000012D0114636C75737465724964730000012E0A20636C757374657253656C656374696F6E0000013207106F76657253697A650000013E04147374726963744D6F6465000001420010616273747261637400000143001470726F70657274696573000001440B147375706572436C6173730000044707187375706572436C6173736573000004510A18637573746F6D4669656C64730000000000000A4F526F6C65080217010816726F756E642D726F62696E00000000000008170900086E616D65000001E9070874797065000001EE0110676C6F62616C4964000001EF01126D616E6461746F7279000001F00010726561646F6E6C79000001F1000E6E6F744E756C6C000001F2001864656661756C7456616C75650000000000066D696E0000000000066D6178000000000018637573746F6D4669656C647300000000000E636F6C6C617465000001F307166465736372697074696F6E000000000000086E616D650E000100010463690900086E616D65000002AA070874797065000002B80110676C6F62616C4964000002B901126D616E6461746F7279000002BA0010726561646F6E6C79000002BB000E6E6F744E756C6C000002BC001864656661756C7456616C75650000000000066D696E0000000000066D61780000000000166C696E6B6564436C617373000002BD0718637573746F6D4669656C647300000000000E636F6C6C617465000002C307166465736372697074696F6E0000000000001A696E68657269746564526F6C651A060000000A4F526F6C650E64656661756C740900086E616D650000037E070874797065000003840110676C6F62616C49640000038501126D616E6461746F7279000003860010726561646F6E6C7900000387000E6E6F744E756C6C00000388001864656661756C7456616C75650000000000066D696E0000000000066D61780000000000146C696E6B656454797065000003890118637573746F6D4669656C647300000000000E636F6C6C6174650000038A07166465736372697074696F6E0000000000000A72756C65731804000000220E64656661756C740900086E616D65000004350708747970650000043A0110676C6F62616C49640000043B01126D616E6461746F72790000043C0010726561646F6E6C790000043D000E6E6F744E756C6C0000043E001864656661756C7456616C75650000000000066D696E0000000000066D6178000000000018637573746F6D4669656C647300000000000E636F6C6C6174650000043F07166465736372697074696F6E000000000000086D6F646522020000000E64656661756C74124F4964656E74697479021707124F4964656E746974790900086E616D6500000537071273686F72744E616D650000000000166465736372697074696F6E00000000002064656661756C74436C75737465724964000005410114636C7573746572496473000005420A20636C757374657253656C656374696F6E0000054607106F76657253697A650000055204147374726963744D6F6465000005560010616273747261637400000557001470726F70657274696573000005580B147375706572436C6173730000000000187375706572436C6173736573000000000018637573746F6D4669656C6473000000000000124F53657175656E63650E0217010E16726F756E642D726F62696E0000000000000A170900086E616D65000005FD070874797065000006020110676C6F62616C49640000060301126D616E6461746F7279000006040010726561646F6E6C7900000605000E6E6F744E756C6C0000
+
 decode_records_iterable(<<0:?o_byte, Msg/binary>>, Acc) ->
     {lists:reverse(Acc), Msg};
 decode_records_iterable(<<1:?o_byte, Msg/binary>>, Acc) ->
     {{RecordType, RecordVersion, RecordBin}, NextRecord} = odi_bin:decode([byte, integer, bytes], Msg),
-    {Class, Data, <<>>} = odi_record_binary:decode_record(RecordBin),
+    {Class, Data, <<>>} = odi_record_binary:decode_record(RecordType, RecordBin, RecordBin),
     decode_records_iterable(NextRecord,
         [{true, odi_bin:decode_record_type(RecordType), RecordVersion, Class, Data} | Acc]);
 decode_records_iterable(<<2:?o_byte, Msg/binary>>, Records) ->
@@ -594,7 +602,7 @@ decode_records_iterable(<<2:?o_byte, Msg/binary>>, Records) ->
 
 decode_record(<<0:?o_short, Bin/binary>>) ->
     {{RecordType, ClusterId, RecordPosition, RecordVersion, RecordBin}, Rest} = odi_bin:decode([byte, short, long, integer, bytes], Bin),
-    {Class, Data, <<>>} = odi_record_binary:decode_record(RecordBin),
+    {Class, Data, <<>>} = odi_record_binary:decode_record(RecordType, RecordBin, RecordBin),
     {{{ClusterId, RecordPosition}, odi_bin:decode_record_type(RecordType), RecordVersion, Class, Data}, Rest};
 decode_record(<<-2:?o_short, Rest/binary>>) ->
     {null, Rest};
@@ -602,25 +610,21 @@ decode_record(<<-3:?o_short, Bin/binary>>) ->
     {{ClusterId, RecordPosition}, Rest} = odi_bin:decode([short, long], Bin),
     {{{ClusterId, RecordPosition}, null, null, null, null}, Rest}.
 
-%% 00
-%% 00000081
-%% 72 == r
-%% 0000 full record
-%% 64 RecordType
-%% 0009 ClusterId
-%% 00000000 00000000 RecordPosition
-%% 00000001 RecordVersion
-%% 0000000F 0002 5602 7800 0000 0B04 0040 9000 00
-%% 00
-decode_command_answer(<<$n:?o_byte, Rest/binary>>) ->
+
+decode_command_answer(Bin) ->
+    {Results, CachedBin} = decode_command_answer_primary(Bin),
+    {Cached, Rest} = decode_records_iterable(CachedBin, []),
+    {{Results, Cached}, Rest}.
+
+decode_command_answer_primary(<<$n:?o_byte, Rest/binary>>) ->
     {[], Rest};
-decode_command_answer(<<$l:?o_byte, Num:?o_int, Rest/binary>>) ->
+decode_command_answer_primary(<<$l:?o_byte, Num:?o_int, Rest/binary>>) ->
     decode_record_list(Num, Rest, []);
-decode_command_answer(<<$s:?o_byte, Num:?o_int, Rest/binary>>) ->
+decode_command_answer_primary(<<$s:?o_byte, Num:?o_int, Rest/binary>>) ->
     decode_record_list(Num, Rest, []);
-decode_command_answer(<<$i:?o_byte, Rest/binary>>) ->
+decode_command_answer_primary(<<$i:?o_byte, Rest/binary>>) ->
     decode_records_iterable(Rest, []);
-decode_command_answer(<<$r:?o_byte, Bin/binary>>) ->
+decode_command_answer_primary(<<$r:?o_byte, Bin/binary>>) ->
     {Record, Rest} = decode_record(Bin),
     {[Record], Rest}.
 %% TODO: type=$w

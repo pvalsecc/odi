@@ -74,20 +74,20 @@ record(Config) ->
 query(Config) ->
     Con = ?config(con, Config),
 
-    Results0 = odi:query(Con, "select from V", -1, default),
+    {Results0, []} = odi:query(Con, "select from V", -1, default),
     [] = Results0,
 
     Data1 = #{"toto" => {integer, 42}, "tutu" => {string, "tutu"}},
     {VClusterId1, RecordPos1, 1, []} = odi:record_create(Con, -1, {"V", Data1}, document, sync),
 
-    Results1 = odi:query(Con, "select from V", -1, default),
+    {Results1, []} = odi:query(Con, "select from V", -1, default),
     {{VClusterId1, RecordPos1}, document, 1, "V", Data1} = lists:keyfind({VClusterId1, RecordPos1}, 1, Results1),
     1 = length(Results1),
 
     Data2 = #{"x" => {double, 4.5}},
     {VClusterId2, RecordPos2, 1, []} = odi:record_create(Con, -1, {"V", Data2}, document, sync),
 
-    Results2 = odi:query(Con, "select from V", -1, default),
+    {Results2, []} = odi:query(Con, "select from V", -1, default),
     {{VClusterId1, RecordPos1}, document, 1, "V", Data1} = lists:keyfind({VClusterId1, RecordPos1}, 1, Results2),
     {{VClusterId2, RecordPos2}, document, 1, "V", Data2} = lists:keyfind({VClusterId2, RecordPos2}, 1, Results2),
     2 = length(Results2).
@@ -99,7 +99,7 @@ command(Config) ->
     Result = odi:command(Con, "INSERT INTO V (x) VALUES (4.5)"),
     [{{ClusterId, RecordPos}, document, 1, "V", Data}] = Result,
 
-    Result2 = odi:query(Con, "select from V", -1, default),
+    {Result2, []} = odi:query(Con, "select from V", -1, default),
     [{{ClusterId, RecordPos}, document, 1, "V", Data}] = Result2.
 
 %% TODO: test script
@@ -107,28 +107,40 @@ command(Config) ->
 tx(Config) ->
     Con = ?config(con, Config),
 
-    Data1 = #{"toto" => {integer, 42}, "tutu" => {string, "tutu"}},
-    Data2 = #{"x" => {double, 4.5}},
+    % Create two vectices linked with one edge (for some reason, for the RID to be remapped, the linkbags must have UUIDs.
+    Data1 = #{"toto" => {integer, 42}, "tutu" => {string, "tutu"}, "out_" => {linkbag, {randUuid(), [{-1, -4}]}}},
+    Data2 = #{"x" => {double, 4.5}, "in_" => {linkbag, {randUuid(), [{-1, -4}]}}},
+    DataE = #{"in" => {link, {-1, -2}}, "out" => {link, {-1, -3}}},
     ResultT1 = odi:tx_commit(Con, 1, true, [
-        {create, -1, -1, document, {"V", Data1}},
-        {create, -1, -2, document, {"V", Data2}}
+        {create, -1, -2, document, {"V", Data1}},
+        {create, -1, -3, document, {"V", Data2}},
+        {create, -1, -4, document, {"E", DataE}}
     ]),
-    {[
-        {-1, -1, VClusterId1, RecordPos1},
-        {-1, -2, VClusterId2, RecordPos2}
-     ],
-     _Update, []} = ResultT1,
+    {Ids, _Update, _Changes} = ResultT1,
+    {-1, -2, VClusterId1, RecordPos1} = lists:keyfind(-2, 2, Ids),
+    {-1, -3, VClusterId2, RecordPos2} = lists:keyfind(-3, 2, Ids),
+    {-1, -4, EClusterId, ERecordPos} = lists:keyfind(-4, 2, Ids),
 
-    Data1b = Data1#{"toto" => {integer, 43}},
+    Data1fixed = Data1#{"out_" => {linkbag, [{EClusterId, ERecordPos}]}},
+    Data2fixed = Data2#{"in_" => {linkbag, [{EClusterId, ERecordPos}]}},
+    DataEfixed = #{"in" => {link, {VClusterId1, RecordPos1}}, "out" => {link, {VClusterId2, RecordPos2}}},
+
+    {ResultsReadBack, ResultsReadBackCache} = odi:query(Con, "select from V", -1, default),
+    {{VClusterId1, RecordPos1}, document, 1, "V", Data1fixed} = lists:keyfind({VClusterId1, RecordPos1}, 1, ResultsReadBack),
+    {{VClusterId2, RecordPos2}, document, 1, "V", Data2fixed} = lists:keyfind({VClusterId2, RecordPos2}, 1, ResultsReadBack),
+    2 = length(ResultsReadBack),
+    [{{17, 0}, document, 1, "E", DataEfixed}] = ResultsReadBackCache,
+
+    Data1b = Data1fixed#{"toto" => {integer, 43}},
     ResultT2 = odi:tx_commit(Con, 2, true, [
         {update, VClusterId1, RecordPos1, document, 1, true, {"V", Data1b}},
         {delete, VClusterId2, RecordPos2, document, 1}
     ]),
     {[], [{VClusterId1, RecordPos1, 2}], []} = ResultT2,
 
-    ResultsReadBack = odi:query(Con, "select from V", -1, default),
-    [{{VClusterId1, RecordPos1}, document, 2, "V", Data1b}] = ResultsReadBack.
-
+    {ResultsReadBack2, ResultsReadBackCache2} = odi:query(Con, "select from V", -1, default),
+    [{{VClusterId1, RecordPos1}, document, 2, "V", Data1b}] = ResultsReadBack2,
+    [{{17, 0}, document, 1, "E", DataEfixed}] = ResultsReadBackCache2.  %% TODO: is it normal E keeps the out link to the deleted V?
 
 end_per_testcase(_TestCase, Config) ->
     Con = ?config(con, Config),
@@ -136,3 +148,9 @@ end_per_testcase(_TestCase, Config) ->
     {ok, Admin} = odi:connect("localhost", "root", "root", []),
     ok = odi:db_delete(Admin, "test", "plocal"),
     ok = odi:close(Admin).
+
+
+%% private ----------------------
+
+randUuid() ->
+    rand:uniform((1 bsl 128)) - 1.

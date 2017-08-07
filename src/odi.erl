@@ -110,16 +110,21 @@ datacluster_remove(C, ClusterId) ->
 %Create a new record. Returns the position in the cluster of the new record.
 %New records can have version > 0 (since v1.0) in case the RID has been recycled.
 %   Response: (ClusterPosition:long)
-record_create(C, ClusterId, {Class, Fields}, RecordType, Mode) ->
-    record_create(C, ClusterId, odi_record_binary:encode_record(Class, Fields), RecordType, Mode);
-record_create(C, ClusterId, RecordContent, RecordType, Mode) ->
-    call(C, {record_create, ClusterId, RecordContent, RecordType, Mode}).
+record_create(C, ClusterId, RecordContent, raw, Mode) ->
+    call(C, {record_create, ClusterId, RecordContent, raw, Mode});
+record_create(C, ClusterId, {Class, Fields}, document, Mode) ->
+    {RecordBin, _} = odi_record_binary:encode_record(Class, Fields, 0),
+    call(C, {record_create, ClusterId, RecordBin, document, Mode}).
 
 %Load a record by RecordID, according to a fetch plan
 %   Response: [{IsResultSetBool, RecordType, RecordVersion, Class, Data}]
-record_load(C, {ClusterId, ClusterPosition}, FetchPlan, IgnoreCache) ->
+-spec record_load(C::pid(), {ClusterId::integer(), RecordPosition::integer()}, FetchPlan::string()|default,
+    IgnoreCache::boolean()) ->
+    [{Key::true|{LinkedClusterId::integer(), LinkedRecordPosition::integer()}, document, Version::integer(), Class::string(), Data::map()} |
+     {Key::true|{LinkedClusterId::integer(), LinkedRecordPosition::integer()}, raw, Version::integer(), Class::raw, Data::binary()}].
+record_load(C, {ClusterId, RecordPosition}, FetchPlan, IgnoreCache) ->
     FetchPlan2 = case FetchPlan of default -> "*:1"; _ -> FetchPlan end,
-    call(C, {record_load, ClusterId, ClusterPosition, FetchPlan2, IgnoreCache}).
+    call(C, {record_load, ClusterId, RecordPosition, FetchPlan2, IgnoreCache}).
 
 %Update a record. Returns the new record's version.
 %   RecordVersion: current record version
@@ -127,7 +132,8 @@ record_load(C, {ClusterId, ClusterPosition}, FetchPlan, IgnoreCache) ->
 %   Mode: sync, async
 %Returns NewRecordVersion:integer
 record_update(C, RID, UpdateContent, {Class, Fields}, RecordVersion, RecordType, Mode) ->
-    record_update(C, RID, UpdateContent, odi_record_binary:encode_record(Class, Fields), RecordVersion, RecordType, Mode);
+    {RecordBin, _} = odi_record_binary:encode_record(Class, Fields, 0),
+    record_update(C, RID, UpdateContent, RecordBin, RecordVersion, RecordType, Mode);
 record_update(C, {ClusterId, ClusterPosition}, UpdateContent, RecordContent, RecordVersion, RecordType, Mode) ->
     call(C, {record_update, ClusterId, ClusterPosition, UpdateContent, RecordContent, RecordVersion, RecordType, Mode}).
 
@@ -144,7 +150,8 @@ query(C, SQL, Limit, FetchPlan) ->
 %Syncronous SQL command.
 -spec command(C::pid(), SQL::string()) -> list().
 command(C, SQL) ->
-    call(C, {command, {command, SQL}, sync}).
+    {Results, []} = call(C, {command, {command, SQL}, sync}),
+    Results.
 
 %Syncronous SQL script.
 script(C, Language, Code) ->
@@ -187,9 +194,11 @@ call(C, Command) ->
 
 encode_operation_record({update, ClusterId, ClusterPosition, RecordType, Version, UpdateContent,
                          {Class, Fields}}) ->
-  {update, ClusterId, ClusterPosition, RecordType, Version, UpdateContent,
-   odi_record_binary:encode_record(Class, Fields)};
+    {RecordBin, _} = odi_record_binary:encode_record(Class, Fields, 0),
+    {update, ClusterId, ClusterPosition, RecordType, Version, UpdateContent,
+        RecordBin};
 encode_operation_record({delete, _ClusterId, _ClusterPosition, _RecordType, _Version} = Record) ->
   Record;
 encode_operation_record({create, ClusterId, ClusterPosition, RecordType, {Class, Fields}}) ->
-  {create, ClusterId, ClusterPosition, RecordType, odi_record_binary:encode_record(Class, Fields)}.
+    {RecordBin, _} = odi_record_binary:encode_record(Class, Fields, 0),
+    {create, ClusterId, ClusterPosition, RecordType, RecordBin}.
