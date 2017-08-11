@@ -18,7 +18,14 @@ all() ->
     [simple].
 
 init_per_testcase(TestCase, Config) ->
-    odi_open_db_SUITE:init_per_testcase(TestCase, Config).
+    NewConfig = odi_open_db_SUITE:init_per_testcase(TestCase, Config),
+    Con = ?config(con, NewConfig),
+    [_Result1] = odi:command(Con, "CREATE CLASS Test EXTENDS V"),
+    [_Result2] = odi:command(Con, "CREATE PROPERTY Test.field1 string"),
+    [_Result3] = odi:command(Con, "CREATE PROPERTY Test.field2 long"),
+    [_Result4] = odi:command(Con, "CREATE CLASS TestSub EXTENDS Test"),
+    [_Result5] = odi:command(Con, "CREATE PROPERTY TestSub.field3 boolean"),
+    NewConfig.
 
 simple(Config) ->
     Con = ?config(con, Config),

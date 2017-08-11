@@ -38,6 +38,15 @@
 -type fetched_record()::
     {Key::true|rid(), document, Version::integer(), Class::string(), Data::map()} |
     {Key::true|rid(), raw, Version::integer(), Class::raw, Data::binary()}.
+-type tx_operation()::
+    {update, ClusterId::integer(), ClusterPosition::integer(), RecordType::record_type(),
+        Version::integer(), UpdateContent::boolean(), Record::record()} |
+    {delete, ClusterId::integer(), ClusterPosition::integer(), RecordType::record_type(),
+        Version::integer()} |
+    {create, ClusterId::integer(), ClusterPosition::integer(), RecordType::record_type(),
+        Record::record()}.
+
+-export_type([tx_operation/0]).
 
 start_link() ->
     odi_sock:start_link().
@@ -176,12 +185,6 @@ script(C, Language, Code) ->
 
 %Commits a transaction. This operation flushes all the pending changes to the server side.
 %   Operations: [{OperationType, ClusterId, ClusterPosition, RecordType}]
--type tx_operation()::{update, ClusterId::integer(), ClusterPosition::integer(), RecordType::record_type(),
-                               Version::integer(), UpdateContent::boolean(), Record::record()} |
-                      {delete, ClusterId::integer(), ClusterPosition::integer(), RecordType::record_type(),
-                               Version::integer()} |
-                      {create, ClusterId::integer(), ClusterPosition::integer(), RecordType::record_type(),
-                               Record::record()}.
 -spec tx_commit(C::pid(), TxId::integer(), UsingLog::boolean(), Operations::[tx_operation()]) ->
   {CreatedRecords::[{ClientSpecifiedClusterId::integer(), ClientSpecifiedClusterPosition::number(),
                      CreatedClusterId::number(), CreatedClusterPosition::number()}],

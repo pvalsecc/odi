@@ -626,8 +626,10 @@ decode_command_answer_primary(<<$i:?o_byte, Rest/binary>>) ->
     decode_records_iterable(Rest, []);
 decode_command_answer_primary(<<$r:?o_byte, Bin/binary>>) ->
     {Record, Rest} = decode_record(Bin),
+    {[Record], Rest};
+decode_command_answer_primary(<<$w:?o_byte, Bin/binary>>) ->
+    {Record, Rest} = decode_record(Bin),
     {[Record], Rest}.
-%% TODO: type=$w
 
 decode_record_list(0, Rest, Acc) ->
     {lists:reverse(Acc), Rest};
