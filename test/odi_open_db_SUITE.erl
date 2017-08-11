@@ -53,11 +53,11 @@ record(Config) ->
 
     Data1b = #{"out_" => {linkbag, [{EClusterId, RecordPos3}]}},
     Data1final = maps:merge(Data1, Data1b),
-    {2, []} = odi:record_update(Con, {VClusterId, RecordPos1}, false, {"V", Data1final}, 1, document, sync),
+    {2, []} = odi:record_update(Con, {VClusterId, RecordPos1}, false, {"V", Data1final}, 1, sync),
 
     Data2b = #{"in_" => {linkbag, [{EClusterId, RecordPos3}]}},
     Data2final = maps:merge(Data2, Data2b),
-    {2, []} = odi:record_update(Con, {VClusterId, RecordPos2}, false, {"V", Data2final}, 1, document, sync),
+    {2, []} = odi:record_update(Con, {VClusterId, RecordPos2}, false, {"V", Data2final}, 1, sync),
 
     Result = odi:record_load(Con, {VClusterId, RecordPos1}, "*:2", false),
     io:format("Read record: ~p~n", [Result]),

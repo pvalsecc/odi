@@ -498,7 +498,7 @@ on_response(datacluster_remove, Bin, State) ->
 
 % Response: (cluster-id:short)(cluster-position:long)(record-version:int)(count-of-collection-changes)[(uuid-most-sig-bits:long)(uuid-least-sig-bits:long)(updated-file-id:long)(updated-page-index:long)(updated-page-offset:int)]*
 on_response(record_create, Bin, State) ->
-    on_simple_response(Bin, State, [short, long, integer, {integer, [long, long, long, long, integer]}]);
+    on_simple_response(Bin, State, [short, long, integer, {integer, [longlong, long, long, integer]}]);
 
 % Response: [(payload-status:byte)[(record-content:bytes)(record-version:int)(record-type:byte)]*]+
 on_response(record_load, Bin, State) ->
@@ -520,7 +520,7 @@ on_response(record_load, Bin, State) ->
 
 % Response: (record-version:int)(count-of-collection-changes)[(uuid-most-sig-bits:long)(uuid-least-sig-bits:long)(updated-file-id:long)(updated-page-index:long)(updated-page-offset:int)]*
 on_response(record_update, Bin, State) ->
-    on_simple_response(Bin, State, [integer, {integer, [long, long, long, long, integer]}]);
+    on_simple_response(Bin, State, [integer, {integer, [longlong, long, long, integer]}]);
 
 % Response: (has-been-deleted:boolean)
 on_response(record_delete, Bin, State) ->

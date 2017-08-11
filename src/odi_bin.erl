@@ -25,6 +25,7 @@ encode(byte, N)                     -> <<N:?o_byte>>;
 encode(short, N)                    -> <<N:?o_short>>;
 encode(integer, N)                  -> <<N:?o_int>>;
 encode(long, N)                     -> <<N:?o_long>>;
+encode(longlong, N)                     -> <<N:?o_longlong>>;
 encode(float, N)                    -> <<N:?o_float>>;
 encode(double, N)                   -> <<N:?o_double>>;
 encode(rawbytes, B)                 -> B;

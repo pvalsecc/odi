@@ -17,6 +17,7 @@
          datacluster_remove/2,
          record_create/5,
          record_load/4,
+         record_update/6,
          record_update/7,
          record_delete/4,
          query/4,
@@ -30,6 +31,14 @@
 
 %% -- client interface --
 
+-type rid()::{ClusterId::integer(), ClusterPosition::integer()}.
+-type record()::{Class::string(), Data::#{string() => any()}}.  %% TODO: more details
+-type record_type()::raw|flat|document.
+-type mode()::sync|async|no_response.
+-type fetched_record()::
+    {Key::true|rid(), document, Version::integer(), Class::string(), Data::map()} |
+    {Key::true|rid(), raw, Version::integer(), Class::raw, Data::binary()}.
+
 start_link() ->
     odi_sock:start_link().
 
@@ -40,10 +49,7 @@ start_link() ->
               Opts::[{timeout, Timeout::integer()} | {port, Port::integer()}]) -> {ok, Con::pid()}.
 connect(Host, Username, Password, Opts) ->
     {ok, C} = odi_sock:start_link(),
-    connect(C, Host, Username, Password, Opts).
-
-connect(C, Host, Username, Password, Opts) ->
-    call_conn(C, {connect, Host, Username, Password, Opts}).
+    {call(C, {connect, Host, Username, Password, Opts}), C}.
 
 %This is the first operation the client should call. It opens a database on the remote OrientDB Server.
 %Returns the Session-Id to being reused for all the next calls and the list of configured clusters.
@@ -52,10 +58,7 @@ connect(C, Host, Username, Password, Opts) ->
       {Clusters::[{ClusterName::string(), ClusterId::integer()}], Con::pid()}.
 db_open(Host, DBName, Username, Password, Opts) ->
     {ok, C} = odi_sock:start_link(),
-    db_open(C, Host, DBName, Username, Password, Opts).
-
-db_open(C, Host, DBName, Username, Password, Opts) ->
-    call_conn(C, {db_open, Host, DBName, Username, Password, Opts}).
+    {call(C, {db_open, Host, DBName, Username, Password, Opts}), C}.
 
 %Creates a database in the remote OrientDB server instance.
 %Works in connect-mode.
@@ -109,19 +112,20 @@ datacluster_remove(C, ClusterId) ->
 
 %Create a new record. Returns the position in the cluster of the new record.
 %New records can have version > 0 (since v1.0) in case the RID has been recycled.
-%   Response: (ClusterPosition:long)
-record_create(C, ClusterId, RecordContent, raw, Mode) ->
-    call(C, {record_create, ClusterId, RecordContent, raw, Mode});
+-spec record_create(C::pid(), ClusterId::integer(), RecordContent::binary(),
+                    RecordType::record_type(), Mode::mode()) ->
+    {ClusterId::integer(), ClusterPosition::integer(), RecordVersion::integer(),
+     [{Uuid::integer(), UpdatedFileId::integer(), UpdatePageIndex::integer(), UpdatedPageOffset::integer()}]}.
 record_create(C, ClusterId, {Class, Fields}, document, Mode) ->
     {RecordBin, _} = odi_record_binary:encode_record(Class, Fields, 0),
-    call(C, {record_create, ClusterId, RecordBin, document, Mode}).
+    call(C, {record_create, ClusterId, RecordBin, document, Mode});
+record_create(C, ClusterId, RecordContent, RecordType, Mode) ->
+    call(C, {record_create, ClusterId, RecordContent, RecordType, Mode}).
 
 %Load a record by RecordID, according to a fetch plan
-%   Response: [{IsResultSetBool, RecordType, RecordVersion, Class, Data}]
 -spec record_load(C::pid(), {ClusterId::integer(), RecordPosition::integer()}, FetchPlan::string()|default,
     IgnoreCache::boolean()) ->
-    [{Key::true|{LinkedClusterId::integer(), LinkedRecordPosition::integer()}, document, Version::integer(), Class::string(), Data::map()} |
-     {Key::true|{LinkedClusterId::integer(), LinkedRecordPosition::integer()}, raw, Version::integer(), Class::raw, Data::binary()}].
+    [fetched_record()].
 record_load(C, {ClusterId, RecordPosition}, FetchPlan, IgnoreCache) ->
     FetchPlan2 = case FetchPlan of default -> "*:1"; _ -> FetchPlan end,
     call(C, {record_load, ClusterId, RecordPosition, FetchPlan2, IgnoreCache}).
@@ -130,41 +134,53 @@ record_load(C, {ClusterId, RecordPosition}, FetchPlan, IgnoreCache) ->
 %   RecordVersion: current record version
 %   RecordType: raw, flat, document
 %   Mode: sync, async
-%Returns NewRecordVersion:integer
-record_update(C, RID, UpdateContent, {Class, Fields}, RecordVersion, RecordType, Mode) ->
+-spec record_update(C::pid(), RID::rid(), UpdateContent::boolean(), Record::record(),
+                    OldRecordVersion::integer(), Mode::mode()) ->
+    {RecordVersion::integer(),
+     [{Uuid::integer(), UpdatedFileId::integer(), UpdatePageIndex::integer(), UpdatedPageOffset::integer()}]}.
+record_update(C, RID, UpdateContent, {Class, Fields}, OldRecordVersion, Mode) ->
     {RecordBin, _} = odi_record_binary:encode_record(Class, Fields, 0),
-    record_update(C, RID, UpdateContent, RecordBin, RecordVersion, RecordType, Mode);
-record_update(C, {ClusterId, ClusterPosition}, UpdateContent, RecordContent, RecordVersion, RecordType, Mode) ->
-    call(C, {record_update, ClusterId, ClusterPosition, UpdateContent, RecordContent, RecordVersion, RecordType, Mode}).
+    record_update(C, RID, UpdateContent, RecordBin, OldRecordVersion, document, Mode).
+
+-spec record_update(C::pid(), RID::rid(), UpdateContent::boolean(), Record::binary(),
+                    OldRecordVersion ::integer(), RecordType::record_type(), Mode::mode()) ->
+    {OldRecordVersion ::integer(),
+     [{Uuid::integer(), UpdatedFileId::integer(), UpdatePageIndex::integer(), UpdatedPageOffset::integer()}]}.
+record_update(C, {ClusterId, ClusterPosition}, UpdateContent, RecordContent, OldRecordVersion, RecordType,
+              Mode) when is_binary(RecordContent) ->
+    call(C, {record_update, ClusterId, ClusterPosition, UpdateContent, RecordContent, OldRecordVersion, RecordType, Mode}).
 
 %Delete a record by its RecordID. During the optimistic transaction the record will be deleted only if the versions match.
 %Returns true if has been deleted otherwise false.
+-spec record_delete(C::pid(), RID::rid(), RecordVersion::integer(), Mode::mode()) -> boolean().
 record_delete(C, {ClusterId, ClusterPosition}, RecordVersion, Mode) ->
     call(C, {record_delete, ClusterId, ClusterPosition, RecordVersion, Mode}).
 
 %SQL query (SELECT or TRAVERSE).
+-spec query(C::pid(), SQL::string(), Limit::integer(), FetchPlan::string()|default) ->
+    {Results::[fetched_record()], Cached::[fetched_record()]}.
 query(C, SQL, Limit, FetchPlan) ->
     FetchPlan2 = case FetchPlan of default -> "*:1"; _ -> FetchPlan end,
     call(C, {command, {select, SQL, Limit, FetchPlan2}, sync}).
 
 %Syncronous SQL command.
--spec command(C::pid(), SQL::string()) -> list().
+-spec command(C::pid(), SQL::string()) -> [fetched_record()].
 command(C, SQL) ->
     {Results, []} = call(C, {command, {command, SQL}, sync}),
     Results.
 
 %Syncronous SQL script.
+-spec script(C::pid(), Language::string(), Code::string()) -> {[fetched_record()], [fetched_record()]}.
 script(C, Language, Code) ->
     call(C, {command, {script, Language, Code}, sync}).
 
 %Commits a transaction. This operation flushes all the pending changes to the server side.
 %   Operations: [{OperationType, ClusterId, ClusterPosition, RecordType}]
--type record()::{Class::string(), Fields::#{}}.
--type tx_operation()::{update, ClusterId::integer(), ClusterPosition::integer(), RecordType::raw|flat|document,
+-type tx_operation()::{update, ClusterId::integer(), ClusterPosition::integer(), RecordType::record_type(),
                                Version::integer(), UpdateContent::boolean(), Record::record()} |
-                      {delete, ClusterId::integer(), ClusterPosition::integer(), RecordType::raw|flat|document,
+                      {delete, ClusterId::integer(), ClusterPosition::integer(), RecordType::record_type(),
                                Version::integer()} |
-                      {create, ClusterId::integer(), ClusterPosition::integer(), RecordType::raw|flat|document,
+                      {create, ClusterId::integer(), ClusterPosition::integer(), RecordType::record_type(),
                                Record::record()}.
 -spec tx_commit(C::pid(), TxId::integer(), UsingLog::boolean(), Operations::[tx_operation()]) ->
   {CreatedRecords::[{ClientSpecifiedClusterId::integer(), ClientSpecifiedClusterPosition::number(),
@@ -176,13 +192,11 @@ script(C, Language, Code) ->
 tx_commit(C, TxId, UsingTxLog, Operations) ->
     call(C, {tx_commit, TxId, UsingTxLog, lists:map(fun encode_operation_record/1, Operations)}).
 
+-spec close(C::pid()) -> ok.
 close(C) ->
     odi_sock:close(C).
 
 %% -- internal functions --
-
-call_conn(C, Command) ->
-    {call(C, Command), C}.
 
 call(C, Command) ->
     case gen_server:call(C, Command, infinity) of
@@ -202,3 +216,4 @@ encode_operation_record({delete, _ClusterId, _ClusterPosition, _RecordType, _Ver
 encode_operation_record({create, ClusterId, ClusterPosition, RecordType, {Class, Fields}}) ->
     {RecordBin, _} = odi_record_binary:encode_record(Class, Fields, 0),
     {create, ClusterId, ClusterPosition, RecordType, RecordBin}.
+
