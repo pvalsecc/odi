@@ -2,7 +2,7 @@
 -module(odi_record_binary).
 
 %% API
--export([encode_record/3, decode_record/3]).
+-export([encode_record/3, decode_record/3, decode_type/1]).
 
 -include("../include/odi.hrl").
 -include("odi_debug.hrl").

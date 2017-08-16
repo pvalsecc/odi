@@ -64,7 +64,7 @@ init([Con]) ->
 %%    io:format("Config: ~s~n", [Config]),
 
     [{true, document, _Version, _Class, Schemas}] = odi:record_load(Con, {0, 1}, "*:-1 index:0", true),
-    IndexedClasses = index_classes(Schemas),
+    IndexedClasses = index_classes(odi_typed:untypify_record(Schemas)),
     io:format("Classes: ~p~n", [IndexedClasses]),
 
 %%    Indexes = odi:record_load(Con, {0, 2}, "*:-1 index:0", true),
@@ -90,8 +90,9 @@ init([Con]) ->
     {noreply, NewState :: #state{}, timeout() | hibernate} |
     {stop, Reason :: term(), Reply :: term(), NewState :: #state{}} |
     {stop, Reason :: term(), NewState :: #state{}}).
-handle_call({create, TempId, Record}, _From, State) ->
-    Converted = convert_record(Record, State),
+handle_call({create, TempId, Record}, _From, #state{classes=Classes}=State) ->
+    Converted = odi_typed:typify_record(Record, Classes),
+    %% TODO
     {reply, ok, State};
 handle_call(Request, _From, State) ->
     io:format("Unknown call: ~p~n", [Request]),
@@ -165,13 +166,8 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 
 
-%% TODO: take the record with un-typed fields and convert it into typed fields according to its class
-convert_record({Class, Data}, #state{classes=Classes}) ->
-    ok.
-
-
 index_classes(Schemas) ->
-    ClassList = flatten_embedded_set_field(Schemas, "classes"),
+    #{"classes" := ClassList} = Schemas,
     IndexedClasses = index_records(ClassList, "name", #{}),
     maps:map(fun(_K, V) -> index_embedded_set_field("properties", "name", V) end, IndexedClasses).
 
@@ -179,14 +175,10 @@ index_classes(Schemas) ->
 index_records([], _Field, Acc) ->
     Acc;
 index_records([Record | Rest], Field, Acc) ->
-    #{Field := {_, Value}} = Record,
+    #{Field := Value} = Record,
     index_records(Rest, Field, Acc#{Value => Record}).
 
-flatten_embedded_set_field(Record, FieldName) ->
-    #{FieldName := {embedded_set, Values}} = Record,
-    lists:map(fun(I) -> {embedded, {[], R}} = I, R end, Values).
-
 index_embedded_set_field(FieldName, IndexName, Record) ->
-    ValueList = flatten_embedded_set_field(Record, FieldName),
+    #{FieldName := ValueList} = Record,
     IndexedField = index_records(ValueList, IndexName, #{}),
     Record#{FieldName => IndexedField}.
