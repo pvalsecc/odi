@@ -2,7 +2,7 @@
 -behaviour(gen_server).
 
 %% API
--export([begin_transaction/1, create/3]).
+-export([begin_transaction/1, create_vectice/3, commit/2]).
 
 %% gen_server callbacks
 -export([init/1,
@@ -11,6 +11,8 @@
     handle_info/2,
     terminate/2,
     code_change/3]).
+
+-include("odi_debug.hrl").
 
 -define(SERVER, ?MODULE).
 
@@ -37,9 +39,14 @@
 begin_transaction(Con) ->
     gen_server:start_link({local, ?SERVER}, ?MODULE, [Con], []).
 
--spec create(C::pid(), TempId::pos_integer(), Record::record()) -> ok.
-create(C, TempId, Record) ->
-    gen_server:call(C, {create, TempId, Record}).
+-spec create_vectice(T::pid(), TempId::pos_integer(), Record::{Class::string(), Data::record()}) -> ok.
+create_vectice(T, TempId, Record) ->
+    gen_server:call(T, {create_vectice, TempId, Record}).
+
+-spec commit(T::pid(), TxId::pos_integer()) -> any().
+commit(T, TxId) ->
+    gen_server:call(T, {commit, TxId}).
+
 
 %%%===================================================================
 %%% gen_server callbacks
@@ -65,7 +72,7 @@ init([Con]) ->
 
     [{true, document, _Version, _Class, Schemas}] = odi:record_load(Con, {0, 1}, "*:-1 index:0", true),
     IndexedClasses = index_classes(odi_typed:untypify_record(Schemas)),
-    io:format("Classes: ~p~n", [IndexedClasses]),
+    ?odi_debug_graph("Classes: ~p~n", [IndexedClasses]),
 
 %%    Indexes = odi:record_load(Con, {0, 2}, "*:-1 index:0", true),
 %%    io:format("Indexes: ~p~n", [Indexes]),
@@ -90,10 +97,13 @@ init([Con]) ->
     {noreply, NewState :: #state{}, timeout() | hibernate} |
     {stop, Reason :: term(), Reply :: term(), NewState :: #state{}} |
     {stop, Reason :: term(), NewState :: #state{}}).
-handle_call({create, TempId, Record}, _From, #state{classes=Classes}=State) ->
-    Converted = odi_typed:typify_record(Record, Classes),
-    %% TODO
-    {reply, ok, State};
+handle_call({create_vectice, TempId, Record}, _From, #state{classes=Classes, commands=Commands}=State) ->
+    TranslatedRecord = odi_typed:typify_record(Record, Classes),
+    ?odi_debug_graph("Translated: ~p~n", [TranslatedRecord]),
+    {reply, ok, State#state{commands=[{create, -1, TempId, document, TranslatedRecord} | Commands]}};
+handle_call({commit, TxId}, _From, #state{con=Con, commands=Commands}=State) ->
+    odi:tx_commit(Con, TxId, true, Commands),
+    {stop, normal, ok, State};
 handle_call(Request, _From, State) ->
     io:format("Unknown call: ~p~n", [Request]),
     {reply, ok, State}.

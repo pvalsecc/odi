@@ -29,7 +29,10 @@ init_per_testcase(TestCase, Config) ->
 
 simple(Config) ->
     Con = ?config(con, Config),
-    odi_graph:begin_transaction(Con).
+    {ok, Transaction} = odi_graph:begin_transaction(Con),
+    odi_graph:create_vectice(Transaction, -1, {"Test", #{field1 => "hello", field2 => 42}}),
+    odi_graph:create_vectice(Transaction, -1, {"TestSub", #{field1 => "hello", field2 => 42, field3 => true}}),
+    odi_graph:commit(Transaction, 1).
 
 end_per_testcase(TestCase, Config) ->
     odi_open_db_SUITE:end_per_testcase(TestCase, Config).
