@@ -41,11 +41,11 @@
 begin_transaction(Con) ->
     gen_server:start_link({local, ?SERVER}, ?MODULE, [Con], []).
 
--spec create_vertex(T::pid(), TempId::integer()|odi:rid(), Record::{Class::string(), Data::record()}) -> ok.
+-spec create_vertex(T::pid(), TempId::neg_integer()|odi:rid(), Record::{Class::string(), Data::record()}) -> ok.
 create_vertex(T, TempId, Record) ->
     gen_server:call(T, {create_vertex, TempId, Record}).
 
--spec create_edge(T::pid(), TempId::integer()|odi:rid(), FromId::pos_integer()|odi:rid(),
+-spec create_edge(T::pid(), TempId::neg_integer()|odi:rid(), FromId::pos_integer()|odi:rid(),
                   ToId::pos_integer()|odi:rid(), Record::{Class::string(), Data::record()}) -> ok.
 create_edge(T, TempId, FromId, ToId, Record) ->
     gen_server:call(T, {create_edge, TempId, FromId, ToId, Record}).
@@ -235,7 +235,7 @@ create_command(Id, Record,
                #state{commands=Commands, create_command_pos=CommandPos}=State) ->
     State#state{
         commands=Commands ++ [{create, Id, document, Record}],
-        create_command_pos =CommandPos#{Id => length(Commands) + 1}
+        create_command_pos=CommandPos#{Id => length(Commands) + 1}
     }.
 
 

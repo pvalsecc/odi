@@ -34,9 +34,9 @@ init_per_testcase(TestCase, Config) ->
 simple(Config) ->
     Con = ?config(con, Config),
     {ok, Transaction} = odi_graph:begin_transaction(Con),
-    odi_graph:create_vertex(Transaction, -2, {"Test", #{field1 => "hello", field2 => 42}}),
-    odi_graph:create_vertex(Transaction, -3, {"TestSub", #{field1 => "world", field2 => 44, field3 => true}}),
-    odi_graph:create_edge(Transaction, -4, -2, -3, {"TestEdge", #{}}),
+    ok = odi_graph:create_vertex(Transaction, -2, {"Test", #{field1 => "hello", field2 => 42}}),
+    ok = odi_graph:create_vertex(Transaction, -3, {"TestSub", #{field1 => "world", field2 => 44, field3 => true}}),
+    ok = odi_graph:create_edge(Transaction, -4, -2, -3, {"TestEdge", #{}}),
     IdRemaps = odi_graph:commit(Transaction, 1),
     #{
         -2 := {TestClusterId, TestClusterPosition},
