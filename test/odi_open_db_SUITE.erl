@@ -112,14 +112,14 @@ tx(Config) ->
     Data2 = #{"x" => {double, 4.5}, "in_" => {linkbag, {randUuid(), [{-1, -4}]}}},
     DataE = #{"in" => {link, {-1, -2}}, "out" => {link, {-1, -3}}},
     ResultT1 = odi:tx_commit(Con, 1, true, [
-        {create, -1, -2, document, {"V", Data1}},
-        {create, -1, -3, document, {"V", Data2}},
-        {create, -1, -4, document, {"E", DataE}}
+        {create, {-1, -2}, document, {"V", Data1}},
+        {create, {-1, -3}, document, {"V", Data2}},
+        {create, {-1, -4}, document, {"E", DataE}}
     ]),
     {Ids, _Update, _Changes} = ResultT1,
-    {-1, -2, VClusterId1, RecordPos1} = lists:keyfind(-2, 2, Ids),
-    {-1, -3, VClusterId2, RecordPos2} = lists:keyfind(-3, 2, Ids),
-    {-1, -4, EClusterId, ERecordPos} = lists:keyfind(-4, 2, Ids),
+    {{-1, -2}, {VClusterId1, RecordPos1}} = lists:keyfind({-1, -2}, 1, Ids),
+    {{-1, -3}, {VClusterId2, RecordPos2}} = lists:keyfind({-1, -3}, 1, Ids),
+    {{-1, -4}, {EClusterId, ERecordPos}} = lists:keyfind({-1, -4}, 1, Ids),
 
     Data1fixed = Data1#{"out_" => {linkbag, [{EClusterId, ERecordPos}]}},
     Data2fixed = Data2#{"in_" => {linkbag, [{EClusterId, ERecordPos}]}},
@@ -133,10 +133,10 @@ tx(Config) ->
 
     Data1b = Data1fixed#{"toto" => {integer, 43}},
     ResultT2 = odi:tx_commit(Con, 2, true, [
-        {update, VClusterId1, RecordPos1, document, 1, true, {"V", Data1b}},
-        {delete, VClusterId2, RecordPos2, document, 1}
+        {update, {VClusterId1, RecordPos1}, document, 1, true, {"V", Data1b}},
+        {delete, {VClusterId2, RecordPos2}, document, 1}
     ]),
-    {[], [{VClusterId1, RecordPos1, 2}], []} = ResultT2,
+    {[], [{{VClusterId1, RecordPos1}, 2}], []} = ResultT2,
 
     {ResultsReadBack2, ResultsReadBackCache2} = odi:query(Con, "select from V", -1, default),
     [{{VClusterId1, RecordPos1}, document, 2, "V", Data1b}] = ResultsReadBack2,

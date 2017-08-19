@@ -578,28 +578,28 @@ on_response(command, Bin, State) ->
 %                       (updated-file-id:long)(updated-page-index:long)(updated-page-offset:int)
 %                     ]*
 on_response(tx_commit, Bin, State) ->
-    on_simple_response(Bin, State, [{integer, [short, long, short, long]},
-                                    {integer, [short, long, integer]},
+    on_simple_response(Bin, State, [{integer, [[short, long], [short, long]]},
+                                    {integer, [[short, long], integer]},
                                     {integer, [longlong, long, long, integer]}]);
 
 on_response(_Command, _Bin, State) ->
     {error, State}.
 
 
-encode_tx_operation({update, ClusterId, ClusterPosition, RecordType, Version, UpdateContent, RecordContent}) ->
-    Base = encode_base_tx_operation(1, ClusterId, ClusterPosition, RecordType),
+encode_tx_operation({update, Rid, RecordType, Version, UpdateContent, RecordContent}) ->
+    Base = encode_base_tx_operation(1, Rid, RecordType),
     %% (version:int)(update-content:boolean)(record-content:bytes)  (wrong order...)
     odi_bin:encode([rawbytes, integer, bytes, bool], [Base, Version, RecordContent, UpdateContent]);
-encode_tx_operation({delete, ClusterId, ClusterPosition, RecordType, Version}) ->
-    Base = encode_base_tx_operation(2, ClusterId, ClusterPosition, RecordType),
+encode_tx_operation({delete, Rid, RecordType, Version}) ->
+    Base = encode_base_tx_operation(2, Rid, RecordType),
     %% (version:int)
     odi_bin:encode([rawbytes, integer], [Base, Version]);
-encode_tx_operation({create, ClusterId, ClusterPosition, RecordType, RecordContent}) ->
-    Base = encode_base_tx_operation(3, ClusterId, ClusterPosition, RecordType),
+encode_tx_operation({create, Rid, RecordType, RecordContent}) ->
+    Base = encode_base_tx_operation(3, Rid, RecordType),
     %% (record-content:bytes)
     odi_bin:encode([rawbytes, bytes], [Base, RecordContent]).
 
-encode_base_tx_operation(OperationType, ClusterId, ClusterPosition, RecordType) ->
+encode_base_tx_operation(OperationType, {ClusterId, ClusterPosition}, RecordType) ->
     odi_bin:encode(
         [byte, byte, short, long, byte],
         [1, OperationType, ClusterId, ClusterPosition, odi_bin:encode_record_type(RecordType)]).

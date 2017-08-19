@@ -217,7 +217,7 @@ add_edge_ref(VertexId, EdgeId, PropertyName,
                     commands=Commands}=State) ->
     ?odi_debug_graph("Trying to find ~p for updating ~p~n", [VertexId, PropertyName]),
     #{VertexId := VertexCommandPos} = CreateCommandPos,
-    {create, ClusterId, ClusterPosition, document, {Class, Data}} = lists:nth(VertexCommandPos, Commands),
+    {create, Rid, document, {Class, Data}} = lists:nth(VertexCommandPos, Commands),
     ?odi_debug_graph("updating ~p in ~p~n", [PropertyName, Data]),
     NewData = case Data of
         #{PropertyName := {linkbag, Links}} ->
@@ -226,22 +226,22 @@ add_edge_ref(VertexId, EdgeId, PropertyName,
             Data#{PropertyName => {linkbag, [EdgeId]}}
     end,
     NewCommands = lists:sublist(Commands, VertexCommandPos - 1) ++
-        [{create, ClusterId, ClusterPosition, document, {Class, NewData}}] ++
+        [{create, Rid, document, {Class, NewData}}] ++
         lists:nthtail(VertexCommandPos, Commands),
     State#state{commands=NewCommands}.
 %TODO: handle the case where VertexId is in fact an updated record or a record to fetch
 
-create_command({ClusterId, ClusterPosition}=Id, Record,
+create_command(Id, Record,
                #state{commands=Commands, create_command_pos=CommandPos}=State) ->
     State#state{
-        commands=Commands ++ [{create, ClusterId, ClusterPosition, document, Record}],
+        commands=Commands ++ [{create, Id, document, Record}],
         create_command_pos =CommandPos#{Id => length(Commands) + 1}
     }.
 
 
 get_id_remaps([], Map) ->
     Map;
-get_id_remaps([{-1, OldId, ClusterId, ClusterPosition} | Rest], Map) ->
-    get_id_remaps(Rest, Map#{OldId => {ClusterId, ClusterPosition}});
-get_id_remaps([{ClusterId, ClusterPosition, ClusterId, ClusterPosition} | Rest], Map) ->
+get_id_remaps([{{-1, OldId}, NewRid} | Rest], Map) ->
+    get_id_remaps(Rest, Map#{OldId => NewRid});
+get_id_remaps([{Rid, Rid} | Rest], Map) ->
     get_id_remaps(Rest, Map).

@@ -39,12 +39,9 @@
     {Key::true|rid(), document, Version::integer(), Class::string(), Data::map()} |
     {Key::true|rid(), raw, Version::integer(), Class::raw, Data::binary()}.
 -type tx_operation()::
-    {update, ClusterId::integer(), ClusterPosition::integer(), RecordType::record_type(),
-        Version::integer(), UpdateContent::boolean(), Record::record()} |
-    {delete, ClusterId::integer(), ClusterPosition::integer(), RecordType::record_type(),
-        Version::integer()} |
-    {create, ClusterId::integer(), ClusterPosition::integer(), RecordType::record_type(),
-        Record::record()}.
+    {update, Rid::rid(), RecordType::record_type(), Version::integer(), UpdateContent::boolean(), Record::record()} |
+    {delete, Rid::rid(), RecordType::record_type(), Version::integer()} |
+    {create, Rid::rid(), RecordType::record_type(), Record::record()}.
 
 -export_type([tx_operation/0]).
 
@@ -186,10 +183,8 @@ script(C, Language, Code) ->
 %Commits a transaction. This operation flushes all the pending changes to the server side.
 %   Operations: [{OperationType, ClusterId, ClusterPosition, RecordType}]
 -spec tx_commit(C::pid(), TxId::integer(), UsingLog::boolean(), Operations::[tx_operation()]) ->
-  {CreatedRecords::[{ClientSpecifiedClusterId::integer(), ClientSpecifiedClusterPosition::number(),
-                     CreatedClusterId::number(), CreatedClusterPosition::number()}],
-   UpdatedRecords::[{UpdatedClusterId::number(), UpdatedClusterPosition::number(),
-                     NewRecordVersion::integer()}],
+  {CreatedRecords::[{ClientSpecifiedRid::rid(), ActualRid::rid()}],
+   UpdatedRecords::[{UpdatedRid::rid(), NewRecordVersion::integer()}],
    CollectionChanges::[{Uuid::number(), UpdatedFileId::number(), UpdatedPageIndex::number(),
                         UpdatedPageOffset ::number()}]}.
 tx_commit(C, TxId, UsingTxLog, Operations) ->
@@ -209,14 +204,14 @@ call(C, Command) ->
     end.
 
 
-encode_operation_record({update, ClusterId, ClusterPosition, RecordType, Version, UpdateContent,
+encode_operation_record({update, Rid, RecordType, Version, UpdateContent,
                          {Class, Fields}}) ->
     {RecordBin, _} = odi_record_binary:encode_record(Class, Fields, 0),
-    {update, ClusterId, ClusterPosition, RecordType, Version, UpdateContent,
+    {update, Rid, RecordType, Version, UpdateContent,
         RecordBin};
-encode_operation_record({delete, _ClusterId, _ClusterPosition, _RecordType, _Version} = Record) ->
+encode_operation_record({delete, _Rid, _RecordType, _Version} = Record) ->
   Record;
-encode_operation_record({create, ClusterId, ClusterPosition, RecordType, {Class, Fields}}) ->
+encode_operation_record({create, Rid, RecordType, {Class, Fields}}) ->
     {RecordBin, _} = odi_record_binary:encode_record(Class, Fields, 0),
-    {create, ClusterId, ClusterPosition, RecordType, RecordBin}.
+    {create, Rid, RecordType, RecordBin}.
 
