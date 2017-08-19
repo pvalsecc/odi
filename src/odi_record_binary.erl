@@ -2,7 +2,7 @@
 -module(odi_record_binary).
 
 %% API
--export([encode_record/3, decode_record/3, decode_type/1]).
+-export([encode_record/3, decode_record/4, decode_type/1]).
 
 -include("../include/odi.hrl").
 -include("odi_debug.hrl").
@@ -13,7 +13,7 @@ encode_record(Class, Fields, Offset) ->
         {HeaderStart, _} = encode([PrevHeader, {string, K}], OffsetHeader),
         {<<HeaderStart/binary, 0:32, (encode_type(Type)):8>>, [byte_size(HeaderStart) | PrevPos]}
     end, {<<>>, []}, Fields),
-    ?odi_debug("TmpHeaders=~p, HeaderPosReversed=~p~n", [TmpHeader, HeaderPosReversed]),
+    ?odi_debug_record("TmpHeaders=~p, HeaderPosReversed=~p~n", [TmpHeader, HeaderPosReversed]),
     DataOffset = OffsetHeader + byte_size(TmpHeader) + 1,
     {Data, DataPosReversed} = maps:fold(fun(_k, {Type, Value}, {PrevData, PrevPos}) ->
         case Value of
@@ -35,34 +35,45 @@ encode_record(Class, Fields, Offset) ->
     end, TmpHeader, lists:zip(HeaderPosReversed, DataPosReversed)),
     {<<Start/binary, Header/binary, 0:8, Data/binary>>, DataOffset + byte_size(Data)}.
 
-decode_record($d, Bin, GlobalBin) ->
+decode_record($d, Bin, GlobalBin, GlobalProperties) ->
     {{0, Class}, BinHeaders} = decode([byte, string], Bin, GlobalBin),
-    ?odi_debug("decode_record class=~s~n", [Class]),
-    {HeadersReversed, BinData} = decode_headers(BinHeaders, [], GlobalBin),
+    ?odi_debug_record("decode_record class=~s~n", [Class]),
+    {HeadersReversed, BinData} = decode_headers(BinHeaders, [], GlobalBin, GlobalProperties),
     {MinRestData, Data} = lists:foldr(fun({FieldName, CurDataOffset, DataType}, {PrevMinRestData, PrevData}) ->
         case CurDataOffset of
             0 ->
-                ?odi_debug("Decode null field ~s (~p)~n", [FieldName, DataType]),
+                ?odi_debug_record("Decode null field ~s (~p)~n", [FieldName, DataType]),
                 {PrevMinRestData, maps:put(FieldName, {DataType, null}, PrevData)};
             _ ->
                 <<_Before:CurDataOffset/binary, CurData/binary>> = GlobalBin,
-                ?odi_debug("Decode field ~s (~p) +~p~n", [FieldName, DataType, CurDataOffset]),
+                ?odi_debug_record("Decode field ~p (~p) +~p~n", [FieldName, DataType, CurDataOffset]),
                 {Value, RestData} = decode(DataType, CurData, GlobalBin),
                 {min(PrevMinRestData, byte_size(RestData)), maps:put(FieldName, {DataType, Value}, PrevData)}
         end
     end, {byte_size(BinData), #{}}, HeadersReversed),
-    ?odi_debug("decode_record MinRestData=~p: ~p~n",[MinRestData, Data]),
+    ?odi_debug_record("decode_record MinRestData=~p: ~p~n",[MinRestData, Data]),
     {Class, Data, binary_part(BinData, byte_size(BinData), -MinRestData)};
-decode_record($b, Bin, _GlobalBin) ->
+decode_record($b, Bin, _GlobalBin, _GlobalProperties) ->
     {raw, Bin, <<>>}.
 
-decode_headers(<<0:8, Rest/binary>>, PrevHeaders, _GlobalBin) ->
-    ?odi_debug("no more headers~n", []),
+decode_headers(<<0:8, Rest/binary>>, PrevHeaders, _GlobalBin, _GlobalProperties) ->
+    ?odi_debug_record("no more headers~n", []),
     {PrevHeaders, Rest};
-decode_headers(Header, PrevHeaders, GlobalBin) ->
-    {{FieldName, DataOffset, DataType}, NextHeader} = decode([string, int32, byte], Header, GlobalBin),
-    ?odi_debug("new header ~s ~p~n", [FieldName, decode_type(DataType)]),
-    decode_headers(NextHeader, [{FieldName, DataOffset, decode_type(DataType)} | PrevHeaders], GlobalBin).
+decode_headers(Header, PrevHeaders, GlobalBin, GlobalProperties) ->
+    {Len, _Rest} = decode(varint, Header, GlobalBin),
+    case Len >= 0 of
+        true ->
+            {{FieldName, DataOffset, DataType}, NextHeader} = decode([string, int32, byte], Header, GlobalBin),
+            ?odi_debug_record("new named field ~s ~p~n", [FieldName, decode_type(DataType)]),
+            decode_headers(NextHeader, [{FieldName, DataOffset, decode_type(DataType)} | PrevHeaders], GlobalBin, GlobalProperties);
+        false ->
+            {{PropertyId, DataOffset}, NextHeader} = decode([varint, int32], Header, GlobalBin),
+            FixedPropertyId = (PropertyId * -1) - 1,
+            ?odi_debug_record("new property ~p~n", [FixedPropertyId]),
+            #{FixedPropertyId := PropertyDef} = GlobalProperties,
+            #{"name" := Name, "type" := Type} = PropertyDef,
+            decode_headers(NextHeader, [{Name, DataOffset, convert_type(Type)} | PrevHeaders], GlobalBin, GlobalProperties)
+    end.
 
 encode(B, Offset) when is_binary(B) ->
     {B, Offset + byte_size(B)};
@@ -139,20 +150,20 @@ encode(L, Offset) when is_list(L) ->
     end, {<<>>, Offset}, L).
 
 decode(byte, <<N:?o_byte, Rest/binary>>, _GlobalBin) ->
-    ?odi_debug("decode(byte, ~p)~n", [N]),
+    ?odi_debug_record("decode(byte, ~p)~n", [N]),
     {N, Rest};
 decode(int32, <<N:?o_int, Rest/binary>>, _GlobalBin) ->
-    ?odi_debug("decode(int32, ~p)~n", [N]),
+    ?odi_debug_record("decode(int32, ~p)~n", [N]),
     {N, Rest};
 decode(bool, <<0:8, Rest/binary>>, _GlobalBin) ->
-    ?odi_debug("decode(bool, false)~n", []),
+    ?odi_debug_record("decode(bool, false)~n", []),
     {false, Rest};
 decode(bool, <<1:8, Rest/binary>>, _GlobalBin) ->
-    ?odi_debug("decode(bool, true)~n", []),
+    ?odi_debug_record("decode(bool, true)~n", []),
     {true, Rest};
 decode(varint, Bin, _GlobalBin) ->
     {N, Rest} =small_ints:decode_zigzag_varint(Bin),
-    ?odi_debug("decode(varint, ~p)~n", [N]),
+    ?odi_debug_record("decode(varint, ~p)~n", [N]),
     {N, Rest};
 decode(short, Bin, GlobalBin) ->
     decode(varint, Bin, GlobalBin);
@@ -165,61 +176,61 @@ decode(datetime, Bin, GlobalBin) ->
 decode(date, Bin, GlobalBin) ->
     decode(varint, Bin, GlobalBin);
 decode(float, <<N:?o_float, Rest/binary>>, _GlobalBin) ->
-    ?odi_debug("decode(float)~n", []),
+    ?odi_debug_record("decode(float)~n", []),
     {N, Rest};
 decode(double, <<N:?o_double, Rest/binary>>, _GlobalBin) ->
-    ?odi_debug("decode(double, ~p)~n", [N]),
+    ?odi_debug_record("decode(double, ~p)~n", [N]),
     {N, Rest};
 decode(string, Bin, GlobalBin) ->
-    ?odi_debug("decode(string)~n", []),
+    ?odi_debug_record("decode(string)~n", []),
     {Len, Rest} = decode(varint, Bin, GlobalBin),
     true = Len >= 0,
     <<Value:Len/binary, Rest2/binary>> = Rest,
-    ?odi_debug("Reading string len=~p: ~s~n", [Len, Value]),
+    ?odi_debug_record("Reading string len=~p: ~s~n", [Len, Value]),
     {binary_to_list(Value), Rest2};
 decode(binary, Bin, GlobalBin) ->
-    ?odi_debug("decode(binary)~n", []),
+    ?odi_debug_record("decode(binary)~n", []),
     {Len, Rest} = decode(varint, Bin, GlobalBin),
     <<Value:Len/binary, Rest2/binary>> = Rest,
     {Value, Rest2};
 decode(link, Bin, GlobalBin) ->
-    ?odi_debug("decode(link)~n", []),
+    ?odi_debug_record("decode(link)~n", []),
     decode([varint, varint], Bin, GlobalBin);
 decode(link_list, Bin, GlobalBin) ->
-    ?odi_debug("decode(link_list)~n", []),
+    ?odi_debug_record("decode(link_list)~n", []),
     {Len, Rest} = decode(varint, Bin, GlobalBin),
     decode_link_list(Len, Rest, [], GlobalBin);
 decode(link_set, Bin, GlobalBin) ->
-    ?odi_debug("decode(link_set)~n", []),
+    ?odi_debug_record("decode(link_set)~n", []),
     decode(link_list, Bin, GlobalBin);
 decode(link_map, Bin, GlobalBin) ->
-    ?odi_debug("decode(link_map)~n", []),
+    ?odi_debug_record("decode(link_map)~n", []),
     {Len, Rest} = decode(varint, Bin, GlobalBin),
     decode_link_map(Len, Rest, #{}, GlobalBin);
 decode(linkbag, <<0:6, 0:1, 1:1, Len:32, Links/binary>>, GlobalBin) ->
-    ?odi_debug("decode(linkbag, embedded, unassigned)~n", []),
+    ?odi_debug_record("decode(linkbag, embedded, unassigned)~n", []),
     decode_rid_list(Len, Links, [], GlobalBin);
 decode(linkbag, <<0:6, 1:1, 1:1, Uuid:128, Len:?o_int, Links/binary>>, GlobalBin) ->
-    ?odi_debug("decode(linkbag, embedded, assigned)~n", []),
+    ?odi_debug_record("decode(linkbag, embedded, assigned)~n", []),
     {List, Rest} = decode_rid_list(Len, Links, [], GlobalBin),
     {{Uuid, List}, Rest};
 decode(embedded, Bin, GlobalBin) ->
-    ?odi_debug("decode(embedded)~n", []),
-    {Class, Data, Rest} = decode_record($d, <<0:8, Bin/binary>>, GlobalBin),
+    ?odi_debug_record("decode(embedded)~n", []),
+    {Class, Data, Rest} = decode_record($d, <<0:8, Bin/binary>>, GlobalBin, #{}),
     {{Class, Data}, Rest};
 decode(embedded_list, Bin, GlobalBin) ->
     {{Num, Type}, List} = decode([varint, byte], Bin, GlobalBin),
-    ?odi_debug("decode(embedded_list, ~p, ~p)~n", [Num, decode_type(Type)]),
+    ?odi_debug_record("decode(embedded_list, ~p, ~p)~n", [Num, decode_type(Type)]),
     decode_list(Num, decode_type(Type), List, [], GlobalBin);
 decode(embedded_set, Bin, GlobalBin) ->
     decode(embedded_list, Bin, GlobalBin);
 decode(any, <<Type:8, Bin/binary>>, GlobalBin) ->
     DecodedType = decode_type(Type),
-    ?odi_debug("decode(any, ~p)~n", [DecodedType]),
+    ?odi_debug_record("decode(any, ~p)~n", [DecodedType]),
     {Value, Rest} = decode(DecodedType, Bin, GlobalBin),
     {{DecodedType, Value}, Rest};
 decode(L, Bin, GlobalBin) when is_list(L) ->
-    ?odi_debug("decode(list)~n", []),
+    ?odi_debug_record("decode(list)~n", []),
     {Values, Rest} = decode_tuple(L, Bin, GlobalBin),
     {list_to_tuple(Values), Rest}.
 
@@ -303,6 +314,11 @@ decode_type(21) -> decimal;
 decode_type(22) -> linkbag;
 decode_type(23) -> any.
 
+convert_type("BOOLEAN") ->
+    bool;
+convert_type(Type) ->
+    list_to_atom(string:lowercase(Type)).
+
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
 
@@ -313,7 +329,7 @@ encode_record_test() ->
 
 decode_record_test() ->
     Bin = hex:hexstr_to_bin("00025608746f746f000000180108747574750000001907001808747574750102"),
-    {Class, Data, Rest} = decode_record($d, Bin, Bin),
+    {Class, Data, Rest} = decode_record($d, Bin, Bin, #{}),
     "V" = Class,
     #{"toto" := {integer, 12}, "tutu" := {string, "tutu"}} = Data,
     ExpectedRest = hex:hexstr_to_bin("0102"),
@@ -421,7 +437,7 @@ complex_test() ->
         "schemaVersion" => {integer,4}},
     {Bin, Offset} = encode_record("", Data, 0),
     Offset = byte_size(Bin),
-    {"", Data, <<>>} = decode_record($d, Bin, Bin).
+    {"", Data, <<>>} = decode_record($d, Bin, Bin, #{}).
 
 edge_test() ->
     Bin = hex:hexstr_to_bin("00025608746f746f000000220108747574750000002307086f75745f000000281600180874757475039533e8cb477648ab976dc8c38151667d00000001fffffffffffffffffffc"),
@@ -430,10 +446,10 @@ edge_test() ->
         "toto" => {integer, 12},
         "tutu" => {string, "tutu"}
     },
-    {"V", Data, <<>>} = decode_record($d, Bin, Bin),
+    {"V", Data, <<>>} = decode_record($d, Bin, Bin, #{}),
     BinLen = byte_size(Bin),
     io:format("Bin=~p~n", [Bin]),
     {Bin2, BinLen} = encode_record("V", Data, 0),  %% map order is not the same between java and erlang, so cannot compare Bin2 and Bin
-    {"V", Data, <<>>} = decode_record($d, Bin2, Bin2).
+    {"V", Data, <<>>} = decode_record($d, Bin2, Bin2, #{}).
 
 -endif.

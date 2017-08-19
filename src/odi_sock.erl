@@ -22,7 +22,8 @@
                 open_mode = wait_version, %connection opened with: connect() | db_open()
                 data = <<>>, %received data from socket
                 queue = queue:new(), %commands queue
-                timeout = 5000 %network timeout
+                timeout = 5000, %network timeout
+                global_properties = #{}
                 }).
 
 %% -- client interface --
@@ -331,7 +332,7 @@ sendRequest(#state{mod = Mod, sock = Sock, session_id = SessionId}, CommandType,
 
 % port_command() more efficient then gen_tcp:send()
 do_send(gen_tcp, Sock, Bin) ->
-    ?odi_debug("Sending: 0x~s~n", [hex:bin_to_hexstr(Bin)]),
+    ?odi_debug_sock("Sending: 0x~s~n", [hex:bin_to_hexstr(Bin)]),
     try erlang:port_command(Sock, Bin) of
         true ->
             ok
@@ -357,16 +358,20 @@ finish(State = #state{queue = Q}, _Notice, Result) ->
     end,
     State#state{queue = queue:drop(Q)}.
 
-command_tag(#state{queue = Q}) ->
+current_command(#state{queue = Q}) ->
     case queue:len(Q) == 0 of
-        true -> none;
+        true ->
+            none;
         false ->
             {_, Req} = queue:get(Q),
-            if is_tuple(Req) ->
-                    element(1, Req);
-               is_atom(Req) ->
-                    Req
-            end
+            Req
+    end.
+
+command_tag(State) ->
+    case current_command(State) of
+        none -> none;
+        Req when is_tuple(Req) -> element(1, Req);
+        Req when is_atom(Req) -> Req
     end.
 
 %% -- backend message handling --
@@ -381,7 +386,7 @@ loop(#state{data = Data, timeout = Timeout} = State) -> %timeout = Timeout
         _ ->
             case byte_size(Data) > 0 of
                 true ->
-                    ?odi_debug("Received: 0x~s~n", [hex:bin_to_hexstr(Data)]),
+                    ?odi_debug_sock("Received: 0x~s~n", [hex:bin_to_hexstr(Data)]),
                     case on_response(Cmd, Data, State) of
                         {fetch_more, State2} -> {noreply, State2, Timeout};
                         {noreply, #state{data = <<>>} = State2} -> {noreply, State2};
@@ -403,22 +408,30 @@ on_empty_response(Bin, State) ->
     end,
     {noreply, State2}.
 
-%Procced response message without changing State (excl. Data)
+%Process response message without changing State (excl. Data)
 on_simple_response(Bin, State, Format) ->
-    <<Status:?o_byte, _SessionId:?o_int, Message/binary>> = Bin,
-    case Status of
-        1 ->
-            {ErrorInfo,Rest} = odi_bin:decode_error(Message),
-            State2 = finish(State#state{data = Rest}, {error, ErrorInfo});
-        0 ->
-            {Result, Rest} = odi_bin:decode(Format, Message),
-            State2 = finish(State#state{data = Rest}, Result)
-    end,
-    {noreply, State2}.
+    try
+        <<Status:?o_byte, _SessionId:?o_int, Message/binary>> = Bin,
+        case Status of
+            1 ->
+                {ErrorInfo,Rest} = odi_bin:decode_error(Message),
+                ?odi_debug_sock("Got an error: ~p~n", [ErrorInfo]),
+                State2 = finish(State#state{data = Rest}, {error, ErrorInfo});
+            0 ->
+                {Result, Rest} = odi_bin:decode(Format, Message),
+                State2 = finish(State#state{data = Rest}, Result)
+        end,
+        {noreply, State2}
+    catch
+        X:Y ->
+            ?odi_debug_sock("Error while parsing simple response: ~p:~p~n~p~n", [X, Y, erlang:get_stacktrace()]),
+            {fetch_more, State}
+    end.
+
 
 on_response(_Command, Bin, #state{open_mode = wait_version} = State) ->
     <<Version:?o_short, Rest/binary>> = Bin,
-    ?odi_debug("Got version ~p~n", [Version]),
+    ?odi_debug_sock("Got version ~p~n", [Version]),
     true = Version >= ?O_PROTO_VER,
     {fetch_more, State#state{open_mode = wait_answer, data = Rest}};
 
@@ -508,12 +521,21 @@ on_response(record_load, Bin, State) ->
             {ErrorInfo,Rest} = odi_bin:decode_error(Message),
             {noreply, finish(State#state{data = Rest}, {error, ErrorInfo})};
         0 ->
-            {Records, Rest} = decode_records_iterable(Message, []),
-            {noreply, finish(State#state{data = Rest}, Records)}
+            {Records, Rest} = decode_records_iterable(Message, State#state.global_properties, []),
+            State2 = case current_command(State) of
+                {record_load, 0, 1, "*:-1 index:0", true} ->
+                    [{true, document, _Version, _Class, RawSchemas}] = Records,
+                    GlobalProperties = odi_typed:index_global_properties(odi_typed:untypify_record(RawSchemas)),
+                    ?odi_debug_sock("Capturing the GlobalProperties: ~p~n", [GlobalProperties]),
+                    State#state{global_properties=GlobalProperties};
+                _ ->
+                    State
+            end,
+            {noreply, finish(State2#state{data = Rest}, Records)}
         end
     catch
         X:Y ->
-            ?odi_debug("Error while parsing record_load response: ~p:~p~n~p~n", [X, Y, erlang:get_stacktrace()]),
+            ?odi_debug_sock("Error while parsing record_load response: ~p:~p~n~p~n", [X, Y, erlang:get_stacktrace()]),
             {fetch_more, State}
     end;
 
@@ -534,12 +556,12 @@ on_response(command, Bin, State) ->
         1 -> {ErrorInfo,Rest} = odi_bin:decode_error(Message),
             {noreply, finish(State#state{data = Rest}, {error, ErrorInfo})};
         0 ->
-            {Results, Rest} = decode_command_answer(Message),
+            {Results, Rest} = decode_command_answer(Message, State),
             {noreply, finish(State#state{data = Rest}, Results)}
         end
     catch
         X:Y ->
-            ?odi_debug("Error while parsing command response: ~p:~p~n~p~n", [X, Y, erlang:get_stacktrace()]),
+            ?odi_debug_sock("Error while parsing command response: ~p:~p~n~p~n", [X, Y, erlang:get_stacktrace()]),
             {fetch_more, State}
     end;
 
@@ -583,59 +605,53 @@ encode_base_tx_operation(OperationType, ClusterId, ClusterPosition, RecordType) 
         [1, OperationType, ClusterId, ClusterPosition, odi_bin:encode_record_type(RecordType)]).
 
 
-%%01
-%%64 == d   recordType
-%%0000003B = 59  version
-%%000023A9  recordLength
-%% 00001A736368656D6156657273696F6E0000004B010E636C61737365730000004C0B20676C6F62616C50726F7065727469657300001F590A18626C6F62436C757374657273000023A70B000814170900086E616D6500000127071273686F72744E616D650000000000166465736372697074696F6E00000000002064656661756C74436C757374657249640000012D0114636C75737465724964730000012E0A20636C757374657253656C656374696F6E0000013207106F76657253697A650000013E04147374726963744D6F6465000001420010616273747261637400000143001470726F70657274696573000001440B147375706572436C6173730000044707187375706572436C6173736573000004510A18637573746F6D4669656C64730000000000000A4F526F6C65080217010816726F756E642D726F62696E00000000000008170900086E616D65000001E9070874797065000001EE0110676C6F62616C4964000001EF01126D616E6461746F7279000001F00010726561646F6E6C79000001F1000E6E6F744E756C6C000001F2001864656661756C7456616C75650000000000066D696E0000000000066D6178000000000018637573746F6D4669656C647300000000000E636F6C6C617465000001F307166465736372697074696F6E000000000000086E616D650E000100010463690900086E616D65000002AA070874797065000002B80110676C6F62616C4964000002B901126D616E6461746F7279000002BA0010726561646F6E6C79000002BB000E6E6F744E756C6C000002BC001864656661756C7456616C75650000000000066D696E0000000000066D61780000000000166C696E6B6564436C617373000002BD0718637573746F6D4669656C647300000000000E636F6C6C617465000002C307166465736372697074696F6E0000000000001A696E68657269746564526F6C651A060000000A4F526F6C650E64656661756C740900086E616D650000037E070874797065000003840110676C6F62616C49640000038501126D616E6461746F7279000003860010726561646F6E6C7900000387000E6E6F744E756C6C00000388001864656661756C7456616C75650000000000066D696E0000000000066D61780000000000146C696E6B656454797065000003890118637573746F6D4669656C647300000000000E636F6C6C6174650000038A07166465736372697074696F6E0000000000000A72756C65731804000000220E64656661756C740900086E616D65000004350708747970650000043A0110676C6F62616C49640000043B01126D616E6461746F72790000043C0010726561646F6E6C790000043D000E6E6F744E756C6C0000043E001864656661756C7456616C75650000000000066D696E0000000000066D6178000000000018637573746F6D4669656C647300000000000E636F6C6C6174650000043F07166465736372697074696F6E000000000000086D6F646522020000000E64656661756C74124F4964656E74697479021707124F4964656E746974790900086E616D6500000537071273686F72744E616D650000000000166465736372697074696F6E00000000002064656661756C74436C75737465724964000005410114636C7573746572496473000005420A20636C757374657253656C656374696F6E0000054607106F76657253697A650000055204147374726963744D6F6465000005560010616273747261637400000557001470726F70657274696573000005580B147375706572436C6173730000000000187375706572436C6173736573000000000018637573746F6D4669656C6473000000000000124F53657175656E63650E0217010E16726F756E642D726F62696E0000000000000A170900086E616D65000005FD070874797065000006020110676C6F62616C49640000060301126D616E6461746F7279000006040010726561646F6E6C7900000605000E6E6F744E756C6C0000
-
-decode_records_iterable(<<0:?o_byte, Msg/binary>>, Acc) ->
+decode_records_iterable(<<0:?o_byte, Msg/binary>>, _GlobalProperties, Acc) ->
     {lists:reverse(Acc), Msg};
-decode_records_iterable(<<1:?o_byte, Msg/binary>>, Acc) ->
+decode_records_iterable(<<1:?o_byte, Msg/binary>>, GlobalProperties, Acc) ->
     {{RecordType, RecordVersion, RecordBin}, NextRecord} = odi_bin:decode([byte, integer, bytes], Msg),
-    {Class, Data, <<>>} = odi_record_binary:decode_record(RecordType, RecordBin, RecordBin),
-    decode_records_iterable(NextRecord,
+    {Class, Data, <<>>} = odi_record_binary:decode_record(RecordType, RecordBin, RecordBin, GlobalProperties),
+    decode_records_iterable(NextRecord, GlobalProperties,
         [{true, odi_bin:decode_record_type(RecordType), RecordVersion, Class, Data} | Acc]);
-decode_records_iterable(<<2:?o_byte, Msg/binary>>, Records) ->
-    {Record, NextRecord} = decode_record(Msg),
-    decode_records_iterable(NextRecord, [Record | Records]).
+decode_records_iterable(<<2:?o_byte, Msg/binary>>, GlobalProperties, Records) ->
+    {Record, NextRecord} = decode_record(Msg, GlobalProperties),
+    decode_records_iterable(NextRecord, GlobalProperties, [Record | Records]).
 
-decode_record(<<0:?o_short, Bin/binary>>) ->
+decode_record(<<0:?o_short, Bin/binary>>, GlobalProperties) ->
     {{RecordType, ClusterId, RecordPosition, RecordVersion, RecordBin}, Rest} = odi_bin:decode([byte, short, long, integer, bytes], Bin),
-    {Class, Data, <<>>} = odi_record_binary:decode_record(RecordType, RecordBin, RecordBin),
+    {Class, Data, <<>>} = odi_record_binary:decode_record(RecordType, RecordBin, RecordBin, GlobalProperties),
     {{{ClusterId, RecordPosition}, odi_bin:decode_record_type(RecordType), RecordVersion, Class, Data}, Rest};
-decode_record(<<-2:?o_short, Rest/binary>>) ->
+decode_record(<<-2:?o_short, Rest/binary>>, _GlobalProperties) ->
     {null, Rest};
-decode_record(<<-3:?o_short, Bin/binary>>) ->
+decode_record(<<-3:?o_short, Bin/binary>>, _GlobalProperties) ->
     {{ClusterId, RecordPosition}, Rest} = odi_bin:decode([short, long], Bin),
     {{{ClusterId, RecordPosition}, null, null, null, null}, Rest}.
 
 
-decode_command_answer(Bin) ->
-    {Results, CachedBin} = decode_command_answer_primary(Bin),
-    {Cached, Rest} = decode_records_iterable(CachedBin, []),
+decode_command_answer(Bin, #state{global_properties = GlobalProperties}) ->
+    {Results, CachedBin} = decode_command_answer_primary(Bin, GlobalProperties),
+    {Cached, Rest} = decode_records_iterable(CachedBin, GlobalProperties, []),
     {{Results, Cached}, Rest}.
 
-decode_command_answer_primary(<<$n:?o_byte, Rest/binary>>) ->
+decode_command_answer_primary(<<$n:?o_byte, Rest/binary>>, _GlobalProperties) ->
     {[], Rest};
-decode_command_answer_primary(<<$l:?o_byte, Num:?o_int, Rest/binary>>) ->
-    decode_record_list(Num, Rest, []);
-decode_command_answer_primary(<<$s:?o_byte, Num:?o_int, Rest/binary>>) ->
-    decode_record_list(Num, Rest, []);
-decode_command_answer_primary(<<$i:?o_byte, Rest/binary>>) ->
-    decode_records_iterable(Rest, []);
-decode_command_answer_primary(<<$r:?o_byte, Bin/binary>>) ->
-    {Record, Rest} = decode_record(Bin),
+decode_command_answer_primary(<<$l:?o_byte, Num:?o_int, Rest/binary>>, GlobalProperties) ->
+    decode_record_list(Num, Rest, GlobalProperties, []);
+decode_command_answer_primary(<<$s:?o_byte, Num:?o_int, Rest/binary>>, GlobalProperties) ->
+    decode_record_list(Num, Rest, GlobalProperties, []);
+decode_command_answer_primary(<<$i:?o_byte, Rest/binary>>, GlobalProperties) ->
+    decode_records_iterable(Rest, GlobalProperties, []);
+decode_command_answer_primary(<<$r:?o_byte, Bin/binary>>, GlobalProperties) ->
+    {Record, Rest} = decode_record(Bin, GlobalProperties),
     {[Record], Rest};
-decode_command_answer_primary(<<$w:?o_byte, Bin/binary>>) ->
-    {Record, Rest} = decode_record(Bin),
+decode_command_answer_primary(<<$w:?o_byte, Bin/binary>>, GlobalProperties) ->
+    {Record, Rest} = decode_record(Bin, GlobalProperties),
     {[Record], Rest}.
 
-decode_record_list(0, Rest, Acc) ->
+decode_record_list(0, Rest, _GlobalProperties, Acc) ->
     {lists:reverse(Acc), Rest};
-decode_record_list(N, Bin, Acc) ->
-    {Record, Rest} = decode_record(Bin),
-    decode_record_list(N - 1, Rest, [Record | Acc]).
+decode_record_list(N, Bin, GlobalProperties, Acc) ->
+    {Record, Rest} = decode_record(Bin, GlobalProperties),
+    decode_record_list(N - 1, Rest, GlobalProperties, [Record | Acc]).
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
@@ -650,6 +666,35 @@ decode_record_load_test() ->
     {[
         {true, document, 2, "V", #{"out_" := {linkbag, [{17, 0}]}}},
         {{17, 0}, document, 1, "E", #{"in" := {link, {9, 0}}, "out" := {link, {10, 0}}}}
-    ], <<>>} = decode_records_iterable(Bin, []).
+    ], <<>>} = decode_records_iterable(Bin, #{}, []).
+
+
+decode_record_iterable_test() ->
+    GlobalProperties = #{
+        23 => #{"id" => 23,"name" => "field1","type" => "STRING"},
+        24 => #{"id" => 24,"name" => "field2","type" => "LONG"},
+        25 => #{"id" => 25,"name" => "field3","type" => "BOOLEAN"},
+        26 => #{"id" => 26,"name" => "in","type" => "LINK"},
+        27 => #{"id" => 27,"name" => "out","type" => "LINK"}
+    },
+    Bin = hex:hexstr_to_bin("016400000002000000520008546573742F0000002D3100000033086F75745F0000003416186F75745F54657374456467650000004316000A68656C6C6F540100000001002900000000000000000100000001002A000000000000000002000064002A0000000000000000000000010000001900105465737445646765370000001535000000170032004200020000640029000000000000000000000001000000190010546573744564676535000000153700000017004200320000"),
+    Records = decode_records_iterable(Bin, GlobalProperties, []),
+    Expected = [
+        {true, document, 2, "Test", #{
+            "field1" => {string, "hello"},
+            "field2" => {long, 42},
+            "out_" => {linkbag, [{41, 0}]},
+            "out_TestEdge" => {linkbag, [{42, 0}]}
+        }},
+        {{42, 0}, document, 1, "TestEdge", #{
+            "in" => {link, {33, 0}},
+            "out" => {link, {25, 0}}
+        }},
+        {{41,0}, document, 1, "TestEdge", #{
+            "in" => {link, {33, 0}},
+            "out" => {link, {25, 0}}
+        }}
+    ],
+    {Expected, <<>>} = Records.
 
 -endif.

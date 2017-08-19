@@ -2,7 +2,7 @@
 -behaviour(gen_server).
 
 %% API
--export([begin_transaction/1, create_vectice/3, commit/2]).
+-export([begin_transaction/1, create_vertex/3, create_edge/5, commit/2]).
 
 %% gen_server callbacks
 -export([init/1,
@@ -16,13 +16,15 @@
 
 -define(SERVER, ?MODULE).
 
+-type record()::#{string() => any()}.
+
 -record(state, {
     con :: pid(),
     commands = [] :: [odi:tx_operation()],
-    classes :: #{}
+    create_command_pos = #{} :: #{odi:rid() => pos_integer()},
+    classes :: #{string() => record()},
+    global_properties :: #{non_neg_integer() => record()}
 }).
-
--type record()::#{string() => any()}.
 
 %%%===================================================================
 %%% API
@@ -39,11 +41,16 @@
 begin_transaction(Con) ->
     gen_server:start_link({local, ?SERVER}, ?MODULE, [Con], []).
 
--spec create_vectice(T::pid(), TempId::pos_integer(), Record::{Class::string(), Data::record()}) -> ok.
-create_vectice(T, TempId, Record) ->
-    gen_server:call(T, {create_vectice, TempId, Record}).
+-spec create_vertex(T::pid(), TempId::integer()|odi:rid(), Record::{Class::string(), Data::record()}) -> ok.
+create_vertex(T, TempId, Record) ->
+    gen_server:call(T, {create_vertex, TempId, Record}).
 
--spec commit(T::pid(), TxId::pos_integer()) -> any().
+-spec create_edge(T::pid(), TempId::integer()|odi:rid(), FromId::pos_integer()|odi:rid(),
+                  ToId::pos_integer()|odi:rid(), Record::{Class::string(), Data::record()}) -> ok.
+create_edge(T, TempId, FromId, ToId, Record) ->
+    gen_server:call(T, {create_edge, TempId, FromId, ToId, Record}).
+
+-spec commit(T::pid(), TxId::pos_integer()) -> IdRemaps::#{integer() => odi:rid()}.
 commit(T, TxId) ->
     gen_server:call(T, {commit, TxId}).
 
@@ -70,9 +77,12 @@ init([Con]) ->
 %%    [{true, raw, 0, raw, Config}] = odi:record_load(Con, {0, 0}, "", false),
 %%    io:format("Config: ~s~n", [Config]),
 
-    [{true, document, _Version, _Class, Schemas}] = odi:record_load(Con, {0, 1}, "*:-1 index:0", true),
-    IndexedClasses = index_classes(odi_typed:untypify_record(Schemas)),
-    ?odi_debug_graph("Classes: ~p~n", [IndexedClasses]),
+    [{true, document, _Version, _Class, RawSchemas}] = odi:record_load(Con, {0, 1}, "*:-1 index:0", true),
+    Schema = odi_typed:untypify_record(RawSchemas),
+    Classes = index_classes(Schema),
+    GlobalProperties = odi_typed:index_global_properties(Schema),
+    ?odi_debug_graph("Classes: ~p~n", [Classes]),
+    ?odi_debug_graph("GlobalProperties: ~p~n", [GlobalProperties]),
 
 %%    Indexes = odi:record_load(Con, {0, 2}, "*:-1 index:0", true),
 %%    io:format("Indexes: ~p~n", [Indexes]),
@@ -80,7 +90,7 @@ init([Con]) ->
 %%    {Sequences, []} = odi:query(Con, "SELECT FROM OSequence", -1, ""),
 %%    io:format("Sequences: ~p~n", [Sequences]),
 
-    {ok, #state{con=Con, classes= IndexedClasses}}.
+    {ok, #state{con=Con, classes=Classes, global_properties=GlobalProperties}}.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -97,13 +107,24 @@ init([Con]) ->
     {noreply, NewState :: #state{}, timeout() | hibernate} |
     {stop, Reason :: term(), Reply :: term(), NewState :: #state{}} |
     {stop, Reason :: term(), NewState :: #state{}}).
-handle_call({create_vectice, TempId, Record}, _From, #state{classes=Classes, commands=Commands}=State) ->
+handle_call({create_vertex, TempId, Record}, _From, #state{classes=Classes}=State) ->
     TranslatedRecord = odi_typed:typify_record(Record, Classes),
     ?odi_debug_graph("Translated: ~p~n", [TranslatedRecord]),
-    {reply, ok, State#state{commands=[{create, -1, TempId, document, TranslatedRecord} | Commands]}};
+    State2 = create_command(rid(TempId), TranslatedRecord, State),
+    {reply, ok, State2};
+handle_call({create_edge, TempId, FromId, ToId, {Class, Data}}, _From, #state{classes=Classes}=State) ->
+    LinkedData = Data#{"out" => rid(FromId), "in" => rid(ToId)},
+    TranslatedRecord = odi_typed:typify_record({Class, LinkedData}, Classes),
+    ?odi_debug_graph("Translated edge: ~p~n", [TranslatedRecord]),
+    Rid = rid(TempId),
+    State2 = add_edge_ref(rid(FromId), Rid, "out_" ++ Class, State),
+    State3 = add_edge_ref(rid(ToId), Rid, "in_" ++ Class, State2),
+    State4 = create_command(Rid, TranslatedRecord,State3),
+    {reply, ok, State4};
 handle_call({commit, TxId}, _From, #state{con=Con, commands=Commands}=State) ->
-    odi:tx_commit(Con, TxId, true, Commands),
-    {stop, normal, ok, State};
+    ?odi_debug_graph("Committing ~p~n", [Commands]),
+    {Ids, _Update, _Changes} = odi:tx_commit(Con, TxId, true, Commands),
+    {stop, normal, get_id_remaps(Ids, #{}), State};
 handle_call(Request, _From, State) ->
     io:format("Unknown call: ~p~n", [Request]),
     {reply, ok, State}.
@@ -178,17 +199,49 @@ code_change(_OldVsn, State, _Extra) ->
 
 index_classes(Schemas) ->
     #{"classes" := ClassList} = Schemas,
-    IndexedClasses = index_records(ClassList, "name", #{}),
+    IndexedClasses = odi_typed:index_records(ClassList, "name", #{}),
     maps:map(fun(_K, V) -> index_embedded_set_field("properties", "name", V) end, IndexedClasses).
-
-
-index_records([], _Field, Acc) ->
-    Acc;
-index_records([Record | Rest], Field, Acc) ->
-    #{Field := Value} = Record,
-    index_records(Rest, Field, Acc#{Value => Record}).
 
 index_embedded_set_field(FieldName, IndexName, Record) ->
     #{FieldName := ValueList} = Record,
-    IndexedField = index_records(ValueList, IndexName, #{}),
+    IndexedField = odi_typed:index_records(ValueList, IndexName, #{}),
     Record#{FieldName => IndexedField}.
+
+rid({_ClusterId, _ClusterPosition}=Id) ->
+    Id;
+rid(_TempPosition) when is_integer(_TempPosition) ->
+    {-1, _TempPosition}.
+
+add_edge_ref(VertexId, EdgeId, PropertyName,
+             #state{create_command_pos=CreateCommandPos,
+                    commands=Commands}=State) ->
+    ?odi_debug_graph("Trying to find ~p for updating ~p~n", [VertexId, PropertyName]),
+    #{VertexId := VertexCommandPos} = CreateCommandPos,
+    {create, ClusterId, ClusterPosition, document, {Class, Data}} = lists:nth(VertexCommandPos, Commands),
+    ?odi_debug_graph("updating ~p in ~p~n", [PropertyName, Data]),
+    NewData = case Data of
+        #{PropertyName := {linkbag, Links}} ->
+            Data#{PropertyName => {linkbag, [EdgeId | Links]}};
+        _ ->
+            Data#{PropertyName => {linkbag, [EdgeId]}}
+    end,
+    NewCommands = lists:sublist(Commands, VertexCommandPos - 1) ++
+        [{create, ClusterId, ClusterPosition, document, {Class, NewData}}] ++
+        lists:nthtail(VertexCommandPos, Commands),
+    State#state{commands=NewCommands}.
+%TODO: handle the case where VertexId is in fact an updated record or a record to fetch
+
+create_command({ClusterId, ClusterPosition}=Id, Record,
+               #state{commands=Commands, create_command_pos=CommandPos}=State) ->
+    State#state{
+        commands=Commands ++ [{create, ClusterId, ClusterPosition, document, Record}],
+        create_command_pos =CommandPos#{Id => length(Commands) + 1}
+    }.
+
+
+get_id_remaps([], Map) ->
+    Map;
+get_id_remaps([{-1, OldId, ClusterId, ClusterPosition} | Rest], Map) ->
+    get_id_remaps(Rest, Map#{OldId => {ClusterId, ClusterPosition}});
+get_id_remaps([{ClusterId, ClusterPosition, ClusterId, ClusterPosition} | Rest], Map) ->
+    get_id_remaps(Rest, Map).

@@ -1,7 +1,7 @@
 -module(odi_typed).
 
 %% API
--export([typify_record/2, untypify_record/1]).
+-export([typify_record/2, untypify_record/1, index_global_properties/1, index_records/3]).
 
 -include("odi_debug.hrl").
 
@@ -81,3 +81,15 @@ untypify_record({ClusterId, RecordPosition}=R) when is_integer(ClusterId) and is
     R;
 untypify_record({Type, Value}) when is_atom(Type)->
     Value.
+
+
+index_global_properties(Schemas) ->
+    #{"globalProperties" := PropList} = Schemas,
+    index_records(PropList, "id", #{}).
+
+
+index_records([], _Field, Acc) ->
+    Acc;
+index_records([Record | Rest], Field, Acc) ->
+    #{Field := Value} = Record,
+    index_records(Rest, Field, Acc#{Value => Record}).
