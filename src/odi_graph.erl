@@ -2,7 +2,16 @@
 -behaviour(gen_server).
 
 %% API
--export([begin_transaction/1, create_vertex/3, create_edge/5, update/3, delete/3, commit/2]).
+-export([
+    begin_transaction/1,
+    create_vertex/3,
+    create_edge/5,
+    update/3,
+    delete/3,
+    query/4,
+    record_load/3,
+    commit/2
+]).
 
 %% gen_server callbacks
 -export([init/1,
@@ -23,7 +32,8 @@
     commands = [] :: [odi:tx_operation()],
     command_pos = #{} :: #{odi:rid() => pos_integer()},
     classes :: #{string() => record_data()},
-    global_properties :: #{non_neg_integer() => record_data()}
+    global_properties :: #{non_neg_integer() => record_data()},
+    cache = #{} :: #{odi:rid() => {Version::non_neg_integer(), document, Class::string(), Data::record_data()}}
 }).
 
 %%%===================================================================
@@ -57,6 +67,14 @@ update(T, Rid, Data) ->
 -spec delete(T::pid(), Rid::odi:rid(), Version::pos_integer()) -> ok.
 delete(T, Rid, Version) ->
     gen_server:call(T, {delete, Rid, Version}).
+
+-spec query(T::pid(), Query::string(), Limit::integer(), FetchPlan::string()|default) ->
+    [odi:fetched_record()].
+query(T, Query, Limit, FetchPlan) ->
+    gen_server:call(T, {query , Query, Limit, FetchPlan}).
+
+record_load(T, Rid, FetchPlan) ->
+    gen_server:call(T, {record_load , Rid, FetchPlan}).
 
 -spec commit(T::pid(), TxId::pos_integer()) -> IdRemaps::#{integer() => odi:rid()}.
 commit(T, TxId) ->
@@ -133,6 +151,12 @@ handle_call({update, Rid, Data}, _From, State) ->
     {reply, ok, update_impl(rid(Rid), Data, State)};
 handle_call({delete, Rid, Version}, _From, State) ->
     {reply, ok, delete_impl(rid(Rid), Version, State)};
+handle_call({query , Query, Limit, FetchPlan}, _From, #state{con=Con}=State) ->
+    {Results, ForCache} = odi:query(Con, Query, Limit, FetchPlan),
+    {reply, untypify_results(Results), cache_records(Results, cache_records(ForCache, State))};
+handle_call({record_load , Rid, FetchPlan}, _From, State) ->
+    {Record, State2} = record_load_impl(Rid, FetchPlan, State),
+    {reply, untypify_results(Record), State2};
 handle_call({commit, TxId}, _From, #state{con=Con, commands=Commands}=State) ->
     ?odi_debug_graph("Committing ~p~n", [Commands]),
     {Ids, _Update, _Changes} = odi:tx_commit(Con, TxId, true, Commands),
@@ -247,11 +271,11 @@ add_edge_ref_to_transaction(VertexCommandPos, EdgeId, PropertyName, #state{comma
     NewCommands = replace_nths(NewCommand, VertexCommandPos, Commands),
     State#state{commands = NewCommands}.
 
-add_edge_ref_to_existing(VertexId, EdgeId, PropertyName, #state{con=Con}=State) ->
+add_edge_ref_to_existing(VertexId, EdgeId, PropertyName, State) ->
     ?odi_debug_graph("fetching ~p to update ~p~n", [VertexId, PropertyName]),
-    [{true, document, Version, Class, Data}] = odi:record_load(Con, VertexId, "", true),
+    {{VertexId, document, Version, Class, Data}, State2} = record_load_impl(VertexId, "", State),
     NewData = add_edge_ref_to_data(Data, PropertyName, EdgeId),
-    add_update_command(VertexId, Version, {Class, NewData}, State).
+    add_update_command(VertexId, Version, {Class, NewData}, State2).
 
 add_edge_ref_to_data(Data, PropertyName, EdgeId) ->
     case Data of
@@ -295,7 +319,7 @@ update_impl(Rid, Data, #state{command_pos=CommandPos, con=Con}=State) ->
         #{Rid := VertexCommandPos} ->
             update_in_transaction(VertexCommandPos, Data, State);
         _ ->
-            update_existing(Con, Rid, Data, State)
+            update_existing(Rid, Data, State)
     end.
 
 
@@ -313,17 +337,15 @@ update_in_transaction(VertexCommandPos, UpdateData, #state{commands=Commands}=St
     NewCommands = replace_nths(NewCommand, VertexCommandPos, Commands),
     State#state{commands = NewCommands}.
 
-update_existing(Con, Rid, UpdateData, State) ->
+update_existing(Rid, UpdateData, State) ->
     ?odi_debug_graph("fetching ~p to update ~p~n", [Rid, UpdateData]),
-    [{true, document, Version, Class, Data}] = odi:record_load(Con, Rid, "", true),
-    NewData = update_data(Class, Data, UpdateData, State),
-    add_update_command(Rid, Version, {Class, NewData}, State).
+    {{Rid, document, Version, Class, Data}, State2} = record_load_impl(Rid, "", State),
+    NewData = update_data(Class, Data, UpdateData, State2),
+    add_update_command(Rid, Version, {Class, NewData}, State2).
 
 update_data(Class, Orig, Updates, #state{classes=Classes}) ->
     {Class, TypifiedUpdates} = odi_typed:typify_record({Class, Updates}, Classes),
     maps:merge(Orig, TypifiedUpdates).
-
-
 
 
 delete_impl(Rid, Version, #state{commands=Commands, command_pos=CommandPos}=State) ->
@@ -331,3 +353,33 @@ delete_impl(Rid, Version, #state{commands=Commands, command_pos=CommandPos}=Stat
         commands=Commands ++ [{delete, Rid, document, Version}],
         command_pos=CommandPos#{Rid => length(Commands) + 1}
     }.
+
+
+record_load_impl(Rid, FetchPlan, #state{con=Con, cache=Cache}=State) ->
+    case Cache of
+        #{Rid := Record} ->
+            ?odi_debug_graph("Cache hit for ~p~n", [Rid]),
+            {Record, State};
+        _ ->
+            ?odi_debug_graph("Cache miss for ~p~n", [Rid]),
+            [{true, document, Version, Class, Data} | Rest] = odi:record_load(Con, Rid, FetchPlan, true),
+            FixedRecord = {Rid, document, Version, Class, Data},
+            {FixedRecord, cache_records([FixedRecord], cache_records(Rest, State))}
+    end.
+
+
+cache_records(Records, #state{cache=Cache}=State) ->
+    State#state{cache=index_records(Records, Cache)}.
+
+index_records([], Acc) ->
+    Acc;
+index_records([Cur | Rest], Acc) ->
+    index_records(Rest, Acc#{element(1, Cur) => Cur}).
+
+
+untypify_results({Rid, document, Version, Class, Data}) ->
+    {Rid, document, Version, Class, odi_typed:untypify_record(Data)};
+untypify_results([]) ->
+    [];
+untypify_results([Cur | Rest]) ->
+    [untypify_results(Cur) | Rest].

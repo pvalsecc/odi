@@ -12,10 +12,10 @@
 %% API
 -export([all/0, init_per_testcase/2, end_per_testcase/2]).
 
--export([simple/1, two_steps/1]).
+-export([simple/1, two_steps/1, reading/1]).
 
 all() ->
-    [simple, two_steps].
+    [simple, two_steps, reading].
 
 init_per_testcase(TestCase, Config) ->
     NewConfig = odi_open_db_SUITE:init_per_testcase(TestCase, Config),
@@ -48,7 +48,7 @@ two_steps(Config) ->
     {ok, Transaction1} = odi_graph:begin_transaction(Con),
     ok = odi_graph:create_vertex(Transaction1, -2, {"Test", #{field1 => "hello", field2 => 12}}),
     ok = odi_graph:create_vertex(Transaction1, -3, {"TestSub", #{field1 => "world", field2 => 44, field3 => true}}),
-    ok = odi_graph:create_vertex(Transaction1, -6, {"Test", #{field1 => "to be deleted", field2 => 46}}),
+    ok = odi_graph:create_vertex(Transaction1, -6, {"Test", #{field1 => "to be deleted", field2 => 46, other => true}}),
     IdRemaps1 = odi_graph:commit(Transaction1, 1),
 
     {ok, Transaction2} = odi_graph:begin_transaction(Con),
@@ -61,6 +61,19 @@ two_steps(Config) ->
     IdRemaps2 = odi_graph:commit(Transaction2, 2),
 
     check_results(maps:merge(IdRemaps1, IdRemaps2), Con, 2).
+
+reading(Config) ->
+    simple(Config),
+    Con = ?config(con, Config),
+    {ok, Transaction} = odi_graph:begin_transaction(Con),
+    [{HelloRid, document, 1, "Test", HelloData}] =
+        odi_graph:query(Transaction, "SELECT FROM Test WHERE field1='hello'", -1, default),
+    {HelloRid, document, 1, "Test", HelloData} = odi_graph:record_load(Transaction, HelloRid, default),
+    #{"field1" := "hello", "out_TestEdge" := [Edge1Rid, _Edge2Rid]} = HelloData,
+    {Edge1Rid, document, 1, "TestEdge", Edge1Data} = odi_graph:record_load(Transaction, Edge1Rid, default),
+    #{"out" := HelloRid, "in" := WorldRid} = Edge1Data,
+    {WorldRid, document, 1, "TestSub", WorldData} = odi_graph:record_load(Transaction, WorldRid, default),
+    #{"field1" := "world"} = WorldData.
 
 check_results(IdRemaps, Con, VertexVersion) ->
     #{
