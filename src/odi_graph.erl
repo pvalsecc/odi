@@ -2,7 +2,7 @@
 -behaviour(gen_server).
 
 %% API
--export([begin_transaction/1, create_vertex/3, create_edge/5, update/3, commit/2]).
+-export([begin_transaction/1, create_vertex/3, create_edge/5, update/3, delete/3, commit/2]).
 
 %% gen_server callbacks
 -export([init/1,
@@ -54,7 +54,9 @@ create_edge(T, TempId, FromId, ToId, Record) ->
 update(T, Rid, Data) ->
     gen_server:call(T, {update, Rid, Data}).
 
-%%TODO: delete
+-spec delete(T::pid(), Rid::odi:rid(), Version::pos_integer()) -> ok.
+delete(T, Rid, Version) ->
+    gen_server:call(T, {delete, Rid, Version}).
 
 -spec commit(T::pid(), TxId::pos_integer()) -> IdRemaps::#{integer() => odi:rid()}.
 commit(T, TxId) ->
@@ -129,6 +131,8 @@ handle_call({create_edge, TempId, FromId, ToId, {Class, Data}}, _From, #state{cl
     {reply, ok, State4};
 handle_call({update, Rid, Data}, _From, State) ->
     {reply, ok, update_impl(rid(Rid), Data, State)};
+handle_call({delete, Rid, Version}, _From, State) ->
+    {reply, ok, delete_impl(rid(Rid), Version, State)};
 handle_call({commit, TxId}, _From, #state{con=Con, commands=Commands}=State) ->
     ?odi_debug_graph("Committing ~p~n", [Commands]),
     {Ids, _Update, _Changes} = odi:tx_commit(Con, TxId, true, Commands),
@@ -261,14 +265,14 @@ add_edge_ref_to_data(Data, PropertyName, EdgeId) ->
 add_create_command(Rid, Record, #state{commands=Commands, command_pos=CommandPos}=State) ->
     State#state{
         commands=Commands ++ [{create, Rid, document, Record}],
-        command_pos =CommandPos#{Rid => length(Commands) + 1}
+        command_pos=CommandPos#{Rid => length(Commands) + 1}
     }.
 
 
 add_update_command(Rid, Version, Record, #state{commands=Commands, command_pos=CommandPos}=State) ->
     State#state{
         commands=Commands ++ [{update, Rid, document, Version, true, Record}],
-        command_pos =CommandPos#{Rid => length(Commands) + 1}
+        command_pos=CommandPos#{Rid => length(Commands) + 1}
     }.
 
 
@@ -318,3 +322,12 @@ update_existing(Con, Rid, UpdateData, State) ->
 update_data(Class, Orig, Updates, #state{classes=Classes}) ->
     {Class, TypifiedUpdates} = odi_typed:typify_record({Class, Updates}, Classes),
     maps:merge(Orig, TypifiedUpdates).
+
+
+
+
+delete_impl(Rid, Version, #state{commands=Commands, command_pos=CommandPos}=State) ->
+    State#state{
+        commands=Commands ++ [{delete, Rid, document, Version}],
+        command_pos=CommandPos#{Rid => length(Commands) + 1}
+    }.

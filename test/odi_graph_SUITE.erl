@@ -48,6 +48,7 @@ two_steps(Config) ->
     {ok, Transaction1} = odi_graph:begin_transaction(Con),
     ok = odi_graph:create_vertex(Transaction1, -2, {"Test", #{field1 => "hello", field2 => 12}}),
     ok = odi_graph:create_vertex(Transaction1, -3, {"TestSub", #{field1 => "world", field2 => 44, field3 => true}}),
+    ok = odi_graph:create_vertex(Transaction1, -6, {"Test", #{field1 => "to be deleted", field2 => 46}}),
     IdRemaps1 = odi_graph:commit(Transaction1, 1),
 
     {ok, Transaction2} = odi_graph:begin_transaction(Con),
@@ -56,6 +57,7 @@ two_steps(Config) ->
         {"TestEdge", #{}}),
     ok = odi_graph:create_edge(Transaction2, -5, maps:get(-2, IdRemaps1), maps:get(-3, IdRemaps1),
         {"TestEdge", #{}}),
+    ok = odi_graph:delete(Transaction2, maps:get(-6, IdRemaps1), 1),
     IdRemaps2 = odi_graph:commit(Transaction2, 2),
 
     check_results(maps:merge(IdRemaps1, IdRemaps2), Con, 2).

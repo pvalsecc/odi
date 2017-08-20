@@ -46,6 +46,10 @@ typify_known_field(V, #{"type" := Type}, _Classes) ->
 
 
 %% TODO: more types
+typify_unknown_field(true) ->
+    {bool, true};
+typify_unknown_field(false) ->
+    {bool, false};
 typify_unknown_field(V) when is_integer(V), V =< 2147483647, V >= -2147483648 ->
     {integer, V};
 typify_unknown_field(V) when is_integer(V), V =< 9223372036854775807, V >=  -9223372036854775808 ->
