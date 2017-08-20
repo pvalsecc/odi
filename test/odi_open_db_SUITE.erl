@@ -90,7 +90,10 @@ query(Config) ->
     {Results2, []} = odi:query(Con, "select from V", -1, default),
     {{VClusterId1, RecordPos1}, document, 1, "V", Data1} = lists:keyfind({VClusterId1, RecordPos1}, 1, Results2),
     {{VClusterId2, RecordPos2}, document, 1, "V", Data2} = lists:keyfind({VClusterId2, RecordPos2}, 1, Results2),
-    2 = length(Results2).
+    2 = length(Results2),
+
+    {error, Error} = odi:query(Con, "notselect from v", -1 , default),
+    io:format("Error: ~p~n", [Error]).
 
 command(Config) ->
     Con = ?config(con, Config),
@@ -107,7 +110,7 @@ command(Config) ->
 tx(Config) ->
     Con = ?config(con, Config),
 
-    % Create two vectices linked with one edge (for some reason, for the RID to be remapped, the linkbags must have UUIDs.
+    % Create two vertices linked with one edge (for some reason, for the RID to be remapped, the linkbags must have UUIDs.
     Data1 = #{"toto" => {integer, 42}, "tutu" => {string, "tutu"}, "out_" => {linkbag, {randUuid(), [{-1, -4}]}}},
     Data2 = #{"x" => {double, 4.5}, "in_" => {linkbag, {randUuid(), [{-1, -4}]}}},
     DataE = #{"in" => {link, {-1, -2}}, "out" => {link, {-1, -3}}},
@@ -144,7 +147,12 @@ tx(Config) ->
 
 end_per_testcase(_TestCase, Config) ->
     Con = ?config(con, Config),
-    {stop, closed} = odi:db_close(Con),
+    case process_info(Con) of
+        undefined ->
+            ok;
+        _ ->
+            {stop, closed} = odi:db_close(Con)
+    end,
     {ok, Admin} = odi:connect("localhost", "root", "root", []),
     ok = odi:db_delete(Admin, "test", "plocal"),
     ok = odi:close(Admin).

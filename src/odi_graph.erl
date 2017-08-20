@@ -313,7 +313,7 @@ get_id_remaps([{Rid, Rid} | Rest], Map) ->
     get_id_remaps(Rest, Map).
 
 
-update_impl(Rid, Data, #state{command_pos=CommandPos, con=Con}=State) ->
+update_impl(Rid, Data, #state{command_pos=CommandPos}=State) ->
     ?odi_debug_graph("Trying to find ~p for updating data~n", [Rid]),
     case CommandPos of
         #{Rid := VertexCommandPos} ->

@@ -42,6 +42,7 @@
     {update, Rid::rid(), RecordType::record_type(), Version::integer(), UpdateContent::boolean(), Record::record()} |
     {delete, Rid::rid(), RecordType::record_type(), Version::integer()} |
     {create, Rid::rid(), RecordType::record_type(), Record::record()}.
+-type error()::{error, [{ExceptionClass::binary(), ExceptionMessage::binary()}]}.
 
 -export_type([tx_operation/0]).
 
@@ -52,7 +53,7 @@ start_link() ->
 %Returns the session_id:integer of the client.
 %Opts (proplists) = port (default 2424), timeout (default 5000 ms).
 -spec connect(Host::string(), Username::string(), Password::string(),
-              Opts::[{timeout, Timeout::integer()} | {port, Port::integer()}]) -> {ok, Con::pid()}.
+              Opts::[{timeout, Timeout::integer()} | {port, Port::integer()}]) -> {ok, Con::pid()} | error().
 connect(Host, Username, Password, Opts) ->
     {ok, C} = odi_sock:start_link(),
     {call(C, {connect, Host, Username, Password, Opts}), C}.
@@ -61,7 +62,7 @@ connect(Host, Username, Password, Opts) ->
 %Returns the Session-Id to being reused for all the next calls and the list of configured clusters.
 -spec db_open(Host::string(), Dbname::string(), Username::string(), Password::string(),
               Opts::[{timeout, Timeout::integer()} | {port, Port::integer()}]) ->
-      {Clusters::[{ClusterName::string(), ClusterId::integer()}], Con::pid()}.
+      {Clusters::[{ClusterName::string(), ClusterId::integer()}], Con::pid()} | error().
 db_open(Host, DBName, Username, Password, Opts) ->
     {ok, C} = odi_sock:start_link(),
     {call(C, {db_open, Host, DBName, Username, Password, Opts}), C}.
@@ -69,7 +70,7 @@ db_open(Host, DBName, Username, Password, Opts) ->
 %Creates a database in the remote OrientDB server instance.
 %Works in connect-mode.
 -spec db_create(C::pid(), DatabaseName::string(), DatabaseType::string(), StorageType::string(),
-                BackupPath::string()) -> ok.
+                BackupPath::string()) -> ok | error().
 db_create(C, DatabaseName, DatabaseType, StorageType, BackupPath) ->
     call(C, {db_create, DatabaseName, DatabaseType, StorageType, BackupPath}).
 
@@ -81,47 +82,47 @@ db_close(C) ->
 
 %Asks if a database exists in the OrientDB Server instance. It returns true (non-zero) or false (zero).
 %Works in connect-mode.
--spec db_exist(C::pid(), DatabaseName::string(), StorageType::string()) -> boolean().
+-spec db_exist(C::pid(), DatabaseName::string(), StorageType::string()) -> boolean() | error().
 db_exist(C, DatabaseName, StorageType) ->
     call(C, {db_exist, DatabaseName, StorageType}).
 
 %Reloads database information.
--spec db_reload(C::pid()) -> [{ClusterName::string(), ClusterId::integer()}].
+-spec db_reload(C::pid()) -> [{ClusterName::string(), ClusterId::integer()}] | error().
 db_reload(C) ->
     call(C, {db_reload}).
 
 %Removes a database from the OrientDB Server instance.
 %Works in connect-mode.
--spec db_delete(C::pid(), DatabaseName::string(), StorageType::string()) -> ok.
+-spec db_delete(C::pid(), DatabaseName::string(), StorageType::string()) -> ok | error().
 db_delete(C, DatabaseName, ServerStorageType) ->
     call(C, {db_delete, DatabaseName, ServerStorageType}).
 
 %Returns size of the opened database.
--spec db_size(C::pid()) -> integer().
+-spec db_size(C::pid()) -> integer() | error().
 db_size(C) ->
     call(C, {db_size}).
 
 %Asks for the number of records in a database in the OrientDB Server instance.
--spec db_countrecords(C::pid()) -> integer().
+-spec db_countrecords(C::pid()) -> integer() | error().
 db_countrecords(C) ->
     call(C, {db_countrecords}).
 
 %Add a new data cluster.
--spec datacluster_add(C::pid(), Name::string(), ClusterId::integer()) -> integer().
+-spec datacluster_add(C::pid(), Name::string(), ClusterId::integer()) -> integer() | error().
 datacluster_add(C, Name, ClusterId) ->
     call(C, {datacluster_add, Name, ClusterId}).
 
 %Remove a cluster.
--spec datacluster_remove(C::pid(), ClusterId::integer()) -> boolean().
+-spec datacluster_remove(C::pid(), ClusterId::integer()) -> boolean() | error().
 datacluster_remove(C, ClusterId) ->
     call(C, {datacluster_remove, ClusterId}).
 
 %Create a new record. Returns the position in the cluster of the new record.
 %New records can have version > 0 (since v1.0) in case the RID has been recycled.
--spec record_create(C::pid(), ClusterId::integer(), RecordContent::binary(),
-                    RecordType::record_type(), Mode::mode()) ->
+-spec record_create(C::pid(), ClusterId::integer(), RecordContent::binary(), RecordType::record_type(), Mode::mode()) ->
     {ClusterId::integer(), ClusterPosition::integer(), RecordVersion::integer(),
-     [{Uuid::integer(), UpdatedFileId::integer(), UpdatePageIndex::integer(), UpdatedPageOffset::integer()}]}.
+     [{Uuid::integer(), UpdatedFileId::integer(), UpdatePageIndex::integer(), UpdatedPageOffset::integer()}]} |
+    error().
 record_create(C, ClusterId, {Class, Fields}, document, Mode) ->
     {RecordBin, _} = odi_record_binary:encode_record(Class, Fields, 0),
     call(C, {record_create, ClusterId, RecordBin, document, Mode});
@@ -130,8 +131,7 @@ record_create(C, ClusterId, RecordContent, RecordType, Mode) ->
 
 %Load a record by RecordID, according to a fetch plan
 -spec record_load(C::pid(), {ClusterId::integer(), RecordPosition::integer()}, FetchPlan::string()|default,
-    IgnoreCache::boolean()) ->
-    [fetched_record()].
+    IgnoreCache::boolean()) -> [fetched_record()] | error().
 record_load(C, {ClusterId, RecordPosition}, FetchPlan, IgnoreCache) ->
     FetchPlan2 = case FetchPlan of default -> "*:1"; _ -> FetchPlan end,
     call(C, {record_load, ClusterId, RecordPosition, FetchPlan2, IgnoreCache}).
@@ -143,7 +143,7 @@ record_load(C, {ClusterId, RecordPosition}, FetchPlan, IgnoreCache) ->
 -spec record_update(C::pid(), RID::rid(), UpdateContent::boolean(), Record::record(),
                     OldRecordVersion::integer(), Mode::mode()) ->
     {RecordVersion::integer(),
-     [{Uuid::integer(), UpdatedFileId::integer(), UpdatePageIndex::integer(), UpdatedPageOffset::integer()}]}.
+     [{Uuid::integer(), UpdatedFileId::integer(), UpdatePageIndex::integer(), UpdatedPageOffset::integer()}]} | error().
 record_update(C, RID, UpdateContent, {Class, Fields}, OldRecordVersion, Mode) ->
     {RecordBin, _} = odi_record_binary:encode_record(Class, Fields, 0),
     record_update(C, RID, UpdateContent, RecordBin, OldRecordVersion, document, Mode).
@@ -151,32 +151,32 @@ record_update(C, RID, UpdateContent, {Class, Fields}, OldRecordVersion, Mode) ->
 -spec record_update(C::pid(), RID::rid(), UpdateContent::boolean(), Record::binary(),
                     OldRecordVersion ::integer(), RecordType::record_type(), Mode::mode()) ->
     {OldRecordVersion ::integer(),
-     [{Uuid::integer(), UpdatedFileId::integer(), UpdatePageIndex::integer(), UpdatedPageOffset::integer()}]}.
+     [{Uuid::integer(), UpdatedFileId::integer(), UpdatePageIndex::integer(), UpdatedPageOffset::integer()}]} | error().
 record_update(C, {ClusterId, ClusterPosition}, UpdateContent, RecordContent, OldRecordVersion, RecordType,
               Mode) when is_binary(RecordContent) ->
     call(C, {record_update, ClusterId, ClusterPosition, UpdateContent, RecordContent, OldRecordVersion, RecordType, Mode}).
 
 %Delete a record by its RecordID. During the optimistic transaction the record will be deleted only if the versions match.
 %Returns true if has been deleted otherwise false.
--spec record_delete(C::pid(), RID::rid(), RecordVersion::integer(), Mode::mode()) -> boolean().
+-spec record_delete(C::pid(), RID::rid(), RecordVersion::integer(), Mode::mode()) -> boolean() | error().
 record_delete(C, {ClusterId, ClusterPosition}, RecordVersion, Mode) ->
     call(C, {record_delete, ClusterId, ClusterPosition, RecordVersion, Mode}).
 
 %SQL query (SELECT or TRAVERSE).
 -spec query(C::pid(), SQL::string(), Limit::integer(), FetchPlan::string()|default) ->
-    {Results::[fetched_record()], Cached::[fetched_record()]}.
+    {Results::[fetched_record()], Cached::[fetched_record()]} | error().
 query(C, SQL, Limit, FetchPlan) ->
     FetchPlan2 = case FetchPlan of default -> "*:1"; _ -> FetchPlan end,
     call(C, {command, {select, SQL, Limit, FetchPlan2}, sync}).
 
 %Syncronous SQL command.
--spec command(C::pid(), SQL::string()) -> [fetched_record()].
+-spec command(C::pid(), SQL::string()) -> [fetched_record()] | error().
 command(C, SQL) ->
     {Results, []} = call(C, {command, {command, SQL}, sync}),
     Results.
 
 %Syncronous SQL script.
--spec script(C::pid(), Language::string(), Code::string()) -> {[fetched_record()], [fetched_record()]}.
+-spec script(C::pid(), Language::string(), Code::string()) -> {[fetched_record()], [fetched_record()]} | error().
 script(C, Language, Code) ->
     call(C, {command, {script, Language, Code}, sync}).
 
@@ -186,7 +186,7 @@ script(C, Language, Code) ->
   {CreatedRecords::[{ClientSpecifiedRid::rid(), ActualRid::rid()}],
    UpdatedRecords::[{UpdatedRid::rid(), NewRecordVersion::integer()}],
    CollectionChanges::[{Uuid::number(), UpdatedFileId::number(), UpdatedPageIndex::number(),
-                        UpdatedPageOffset ::number()}]}.
+                        UpdatedPageOffset ::number()}]} | error().
 tx_commit(C, TxId, UsingTxLog, Operations) ->
     call(C, {tx_commit, TxId, UsingTxLog, lists:map(fun encode_operation_record/1, Operations)}).
 

@@ -130,15 +130,17 @@ encode_record_vc(RecordVersionControl) ->
 %The format is: [(1)(exception-class:string)(exception-message:string)]*(0)
 decode_error(Bin) ->
   decode_error(Bin, []).
+
 decode_error(<<0:?o_byte, Rest/binary>>, ErrorsAcc) ->
-  {lists:reverse(ErrorsAcc), Rest};
+    {_SerializedException, Rest2} = odi_bin:decode(bytes, Rest),
+    {lists:reverse(ErrorsAcc), Rest2};
 decode_error(<<1:?o_byte, ErrorInfo/binary>>, ErrorsAcc) ->
-  case decode([string, string], ErrorInfo) of
-    {{ExceptionClass, ExceptionMessage}, Rest} -> decode_error(Rest, [{ExceptionClass, ExceptionMessage} | ErrorsAcc]);
-    Error -> Error
-  end;
+    case decode([string, string], ErrorInfo) of
+        {{ExceptionClass, ExceptionMessage}, Rest} -> decode_error(Rest, [{ExceptionClass, ExceptionMessage} | ErrorsAcc]);
+        Error -> Error
+    end;
 decode_error(<<Data/binary>>, _) ->
-  {{error_decoding_errinfo, Data}}.
+  {{error_decoding_errinfo, Data}, <<>>}.
 
 decode_record(Bin) ->
   {{RecordContent, RecordVersion, RecordTypeCode}, Rest}

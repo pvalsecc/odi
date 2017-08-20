@@ -83,13 +83,13 @@ handle_info(timeout, State) ->
 
 % Receive messages from socket:
 % on socket close
-handle_info({Closed, Sock}, #state{sock = Sock} = State)
-  when Closed == tcp_closed; Closed == ssl_closed ->
+handle_info({Closed, Sock}, #state{sock = Sock} = State) when Closed == tcp_closed; Closed == ssl_closed ->
+    ?odi_debug_sock("Socket closed by the remote side~n", []),
     {stop, sock_closed, flush_queue(State, {error, sock_closed})};
 
 % on socket error
-handle_info({Error, Sock, Reason}, #state{sock = Sock} = State)
-  when Error == tcp_error; Error == ssl_error ->
+handle_info({Error, Sock, Reason}, #state{sock = Sock} = State) when Error == tcp_error; Error == ssl_error ->
+    ?odi_debug_sock("Socket error: ~p~n", [Reason]),
     Why = {sock_error, Reason},
     {stop, Why, flush_queue(State, {error, Why})};
 
@@ -98,7 +98,8 @@ handle_info({inet_reply, _, ok}, State) ->
     {noreply, State};
 
 % socket is not ok
-handle_info({inet_reply, _, Status}, State) ->
+handle_info({inet_reply, Reason, Status}, State) ->
+    ?odi_debug_sock("Socket not OK: ~p~n", [Reason]),
     {stop, Status, flush_queue(State, {error, Status})};
 
 % receive data from socket
@@ -398,7 +399,7 @@ loop(#state{data = Data, timeout = Timeout} = State) -> %timeout = Timeout
             end
     end.
 
-%Procced empty response message
+%Process empty response message
 on_empty_response(Bin, State) ->
     <<Status:?o_byte, _SessionId:?o_int, Message/binary>> = Bin,
     case Status of
