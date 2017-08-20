@@ -21,7 +21,7 @@
 -record(state, {
     con :: pid(),
     commands = [] :: [odi:tx_operation()],
-    create_command_pos = #{} :: #{odi:rid() => pos_integer()},
+    command_pos = #{} :: #{odi:rid() => pos_integer()},
     classes :: #{string() => record()},
     global_properties :: #{non_neg_integer() => record()}
 }).
@@ -49,6 +49,8 @@ create_vertex(T, TempId, Record) ->
                   ToId::pos_integer()|odi:rid(), Record::{Class::string(), Data::record()}) -> ok.
 create_edge(T, TempId, FromId, ToId, Record) ->
     gen_server:call(T, {create_edge, TempId, FromId, ToId, Record}).
+
+%%TODO: update and delete
 
 -spec commit(T::pid(), TxId::pos_integer()) -> IdRemaps::#{integer() => odi:rid()}.
 commit(T, TxId) ->
@@ -110,7 +112,7 @@ init([Con]) ->
 handle_call({create_vertex, TempId, Record}, _From, #state{classes=Classes}=State) ->
     TranslatedRecord = odi_typed:typify_record(Record, Classes),
     ?odi_debug_graph("Translated: ~p~n", [TranslatedRecord]),
-    State2 = create_command(rid(TempId), TranslatedRecord, State),
+    State2 = add_create_command(rid(TempId), TranslatedRecord, State),
     {reply, ok, State2};
 handle_call({create_edge, TempId, FromId, ToId, {Class, Data}}, _From, #state{classes=Classes}=State) ->
     LinkedData = Data#{"out" => rid(FromId), "in" => rid(ToId)},
@@ -119,7 +121,7 @@ handle_call({create_edge, TempId, FromId, ToId, {Class, Data}}, _From, #state{cl
     Rid = rid(TempId),
     State2 = add_edge_ref(rid(FromId), Rid, "out_" ++ Class, State),
     State3 = add_edge_ref(rid(ToId), Rid, "in_" ++ Class, State2),
-    State4 = create_command(Rid, TranslatedRecord,State3),
+    State4 = add_create_command(Rid, TranslatedRecord,State3),
     {reply, ok, State4};
 handle_call({commit, TxId}, _From, #state{con=Con, commands=Commands}=State) ->
     ?odi_debug_graph("Committing ~p~n", [Commands]),
@@ -212,30 +214,56 @@ rid({_ClusterId, _ClusterPosition}=Id) ->
 rid(_TempPosition) when is_integer(_TempPosition) ->
     {-1, _TempPosition}.
 
-add_edge_ref(VertexId, EdgeId, PropertyName,
-             #state{create_command_pos=CreateCommandPos,
-                    commands=Commands}=State) ->
+add_edge_ref(VertexId, EdgeId, PropertyName, #state{command_pos =CreateCommandPos}=State) ->
     ?odi_debug_graph("Trying to find ~p for updating ~p~n", [VertexId, PropertyName]),
-    #{VertexId := VertexCommandPos} = CreateCommandPos,
-    {create, Rid, document, {Class, Data}} = lists:nth(VertexCommandPos, Commands),
-    ?odi_debug_graph("updating ~p in ~p~n", [PropertyName, Data]),
-    NewData = case Data of
+    case CreateCommandPos of
+        #{VertexId := VertexCommandPos} ->
+            add_edge_ref_to_transaction(VertexCommandPos, EdgeId, PropertyName, State);
+        _ ->
+            add_edge_ref_to_existing(VertexId, EdgeId, PropertyName, State)
+    end.
+
+add_edge_ref_to_transaction(VertexCommandPos, EdgeId, PropertyName, #state{commands=Commands}=State) ->
+    NewCommand = case lists:nth(VertexCommandPos, Commands) of
+        {create, Rid, document, {Class, Data}} ->
+            ?odi_debug_graph("updating ~p in create ~p~n", [PropertyName, Rid]),
+            NewData = add_edge_ref_to_data(Data, PropertyName, EdgeId),
+            {create, Rid, document, {Class, NewData}};
+        {update, Rid, document, Version, true, {Class, Data}} ->
+            ?odi_debug_graph("updating ~p in update ~p~n", [PropertyName, Rid]),
+            NewData = add_edge_ref_to_data(Data, PropertyName, EdgeId),
+            {update, Rid, document, Version, true, {Class, NewData}}
+    end,
+    NewCommands = lists:sublist(Commands, VertexCommandPos - 1) ++ [NewCommand] ++
+        lists:nthtail(VertexCommandPos, Commands),
+    State#state{commands = NewCommands}.
+
+add_edge_ref_to_existing(VertexId, EdgeId, PropertyName, #state{con=Con}=State) ->
+    ?odi_debug_graph("fetching ~p to update ~p~n", [VertexId, PropertyName]),
+    [{true, document, Version, Class, Data}] = odi:record_load(Con, VertexId, "", true),
+    NewData = add_edge_ref_to_data(Data, PropertyName, EdgeId),
+    add_update_command(VertexId, Version, {Class, NewData}, State).
+
+add_edge_ref_to_data(Data, PropertyName, EdgeId) ->
+    case Data of
         #{PropertyName := {linkbag, Links}} ->
-            Data#{PropertyName => {linkbag, [EdgeId | Links]}};
+            Data#{PropertyName => {linkbag, Links ++ [EdgeId]}};
         _ ->
             Data#{PropertyName => {linkbag, [EdgeId]}}
-    end,
-    NewCommands = lists:sublist(Commands, VertexCommandPos - 1) ++
-        [{create, Rid, document, {Class, NewData}}] ++
-        lists:nthtail(VertexCommandPos, Commands),
-    State#state{commands=NewCommands}.
-%TODO: handle the case where VertexId is in fact an updated record or a record to fetch
+    end.
 
-create_command(Id, Record,
-               #state{commands=Commands, create_command_pos=CommandPos}=State) ->
+
+add_create_command(Rid, Record, #state{commands=Commands, command_pos =CommandPos}=State) ->
     State#state{
-        commands=Commands ++ [{create, Id, document, Record}],
-        create_command_pos=CommandPos#{Id => length(Commands) + 1}
+        commands=Commands ++ [{create, Rid, document, Record}],
+        command_pos =CommandPos#{Rid => length(Commands) + 1}
+    }.
+
+
+add_update_command(Rid, Version, Record, #state{commands=Commands, command_pos =CommandPos}=State) ->
+    State#state{
+        commands=Commands ++ [{update, Rid, document, Version, true, Record}],
+        command_pos =CommandPos#{Rid => length(Commands) + 1}
     }.
 
 

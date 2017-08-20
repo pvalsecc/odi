@@ -12,10 +12,10 @@
 %% API
 -export([all/0, init_per_testcase/2, end_per_testcase/2]).
 
--export([simple/1]).
+-export([simple/1, two_steps/1]).
 
 all() ->
-    [simple].
+    [simple, two_steps].
 
 init_per_testcase(TestCase, Config) ->
     NewConfig = odi_open_db_SUITE:init_per_testcase(TestCase, Config),
@@ -37,33 +37,67 @@ simple(Config) ->
     ok = odi_graph:create_vertex(Transaction, -2, {"Test", #{field1 => "hello", field2 => 42}}),
     ok = odi_graph:create_vertex(Transaction, -3, {"TestSub", #{field1 => "world", field2 => 44, field3 => true}}),
     ok = odi_graph:create_edge(Transaction, -4, -2, -3, {"TestEdge", #{}}),
+    ok = odi_graph:create_edge(Transaction, -5, -2, -3, {"TestEdge", #{}}),
     IdRemaps = odi_graph:commit(Transaction, 1),
+
+    check_results(IdRemaps, Con, 1).
+
+two_steps(Config) ->
+    Con = ?config(con, Config),
+    {ok, Transaction1} = odi_graph:begin_transaction(Con),
+    ok = odi_graph:create_vertex(Transaction1, -2, {"Test", #{field1 => "hello", field2 => 42}}),
+    ok = odi_graph:create_vertex(Transaction1, -3, {"TestSub", #{field1 => "world", field2 => 44, field3 => true}}),
+    IdRemaps1 = odi_graph:commit(Transaction1, 1),
+
+    {ok, Transaction2} = odi_graph:begin_transaction(Con),
+    ok = odi_graph:create_edge(Transaction2, -4, maps:get(-2, IdRemaps1), maps:get(-3, IdRemaps1),
+        {"TestEdge", #{}}),
+    ok = odi_graph:create_edge(Transaction2, -5, maps:get(-2, IdRemaps1), maps:get(-3, IdRemaps1),
+        {"TestEdge", #{}}),
+    IdRemaps2 = odi_graph:commit(Transaction2, 2),
+
+    check_results(maps:merge(IdRemaps1, IdRemaps2), Con, 2).
+
+check_results(IdRemaps, Con, VertexVersion) ->
     #{
         -2 := {TestClusterId, TestClusterPosition},
         -3 := {TestSubClusterId, TestSubClusterPosition},
-        -4 := {TestEdgeClusterId, TestEdgeClusterPosition}
+        -4 := {TestEdgeClusterId1, TestEdgeClusterPosition1},
+        -5 := {TestEdgeClusterId2, TestEdgeClusterPosition2}
     } = IdRemaps,
-
     {ResultsReadBack, ResultsReadBackCache} = odi:query(Con, "SELECT FROM Test ORDER BY field1", -1, default),
     [
-        {{TestClusterId, TestClusterPosition}, document, 1, "Test", DataTest},
-        {{TestSubClusterId, TestSubClusterPosition}, document, 1, "TestSub", DataTestSub}
+        {{TestClusterId, TestClusterPosition}, document, VertexVersion, "Test", DataTest},
+        {{TestSubClusterId, TestSubClusterPosition}, document, VertexVersion, "TestSub", DataTestSub}
     ] = ResultsReadBack,
-    [{{TestEdgeClusterId, TestEdgeClusterPosition}, document, 1, "TestEdge", DataEdge}] = ResultsReadBackCache,
+    [
+        {{TestEdgeClusterId2, TestEdgeClusterPosition2}, document, 1, "TestEdge", DataEdge2},
+        {{TestEdgeClusterId1, TestEdgeClusterPosition1}, document, 1, "TestEdge", DataEdge1}
+    ] = ResultsReadBackCache,
     #{
         "field1" := {string, "hello"},
         "field2" := {long, 42},
-        "out_TestEdge" := {linkbag, [{TestEdgeClusterId, TestEdgeClusterPosition}]}
+        "out_TestEdge" := {linkbag, [
+            {TestEdgeClusterId1, TestEdgeClusterPosition1},
+            {TestEdgeClusterId2, TestEdgeClusterPosition2}
+        ]}
     } = DataTest,
     #{
         "in" := {link, {TestSubClusterId, TestSubClusterPosition}},
         "out" := {link, {TestClusterId, TestClusterPosition}}
-    } = DataEdge,
+    } = DataEdge1,
+    #{
+        "in" := {link, {TestSubClusterId, TestSubClusterPosition}},
+        "out" := {link, {TestClusterId, TestClusterPosition}}
+    } = DataEdge2,
     #{
         "field1" := {string, "world"},
         "field2" := {long, 44},
         "field3" := {bool, true},
-        "in_TestEdge" := {linkbag, [{TestEdgeClusterId, TestEdgeClusterPosition}]}
+        "in_TestEdge" := {linkbag, [
+            {TestEdgeClusterId1, TestEdgeClusterPosition1},
+            {TestEdgeClusterId2, TestEdgeClusterPosition2}
+        ]}
     } = DataTestSub.
 
 end_per_testcase(TestCase, Config) ->
