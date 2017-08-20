@@ -34,10 +34,11 @@ init_per_testcase(TestCase, Config) ->
 simple(Config) ->
     Con = ?config(con, Config),
     {ok, Transaction} = odi_graph:begin_transaction(Con),
-    ok = odi_graph:create_vertex(Transaction, -2, {"Test", #{field1 => "hello", field2 => 42}}),
+    ok = odi_graph:create_vertex(Transaction, -2, {"Test", #{field1 => "hello", field2 => 12}}),
     ok = odi_graph:create_vertex(Transaction, -3, {"TestSub", #{field1 => "world", field2 => 44, field3 => true}}),
     ok = odi_graph:create_edge(Transaction, -4, -2, -3, {"TestEdge", #{}}),
     ok = odi_graph:create_edge(Transaction, -5, -2, -3, {"TestEdge", #{}}),
+    ok = odi_graph:update(Transaction, -2, #{field2 => 42}),
     IdRemaps = odi_graph:commit(Transaction, 1),
 
     check_results(IdRemaps, Con, 1).
@@ -45,11 +46,12 @@ simple(Config) ->
 two_steps(Config) ->
     Con = ?config(con, Config),
     {ok, Transaction1} = odi_graph:begin_transaction(Con),
-    ok = odi_graph:create_vertex(Transaction1, -2, {"Test", #{field1 => "hello", field2 => 42}}),
+    ok = odi_graph:create_vertex(Transaction1, -2, {"Test", #{field1 => "hello", field2 => 12}}),
     ok = odi_graph:create_vertex(Transaction1, -3, {"TestSub", #{field1 => "world", field2 => 44, field3 => true}}),
     IdRemaps1 = odi_graph:commit(Transaction1, 1),
 
     {ok, Transaction2} = odi_graph:begin_transaction(Con),
+    ok = odi_graph:update(Transaction2, maps:get(-2, IdRemaps1), #{field2 => 42}),
     ok = odi_graph:create_edge(Transaction2, -4, maps:get(-2, IdRemaps1), maps:get(-3, IdRemaps1),
         {"TestEdge", #{}}),
     ok = odi_graph:create_edge(Transaction2, -5, maps:get(-2, IdRemaps1), maps:get(-3, IdRemaps1),

@@ -2,7 +2,7 @@
 -behaviour(gen_server).
 
 %% API
--export([begin_transaction/1, create_vertex/3, create_edge/5, commit/2]).
+-export([begin_transaction/1, create_vertex/3, create_edge/5, update/3, commit/2]).
 
 %% gen_server callbacks
 -export([init/1,
@@ -16,14 +16,14 @@
 
 -define(SERVER, ?MODULE).
 
--type record()::#{string() => any()}.
+-type record_data()::#{string()|atom() => any()}.
 
 -record(state, {
     con :: pid(),
     commands = [] :: [odi:tx_operation()],
     command_pos = #{} :: #{odi:rid() => pos_integer()},
-    classes :: #{string() => record()},
-    global_properties :: #{non_neg_integer() => record()}
+    classes :: #{string() => record_data()},
+    global_properties :: #{non_neg_integer() => record_data()}
 }).
 
 %%%===================================================================
@@ -41,16 +41,20 @@
 begin_transaction(Con) ->
     gen_server:start_link({local, ?SERVER}, ?MODULE, [Con], []).
 
--spec create_vertex(T::pid(), TempId::neg_integer()|odi:rid(), Record::{Class::string(), Data::record()}) -> ok.
+-spec create_vertex(T::pid(), TempId::neg_integer()|odi:rid(), Record::{Class::string(), Data:: record_data()}) -> ok.
 create_vertex(T, TempId, Record) ->
     gen_server:call(T, {create_vertex, TempId, Record}).
 
 -spec create_edge(T::pid(), TempId::neg_integer()|odi:rid(), FromId::pos_integer()|odi:rid(),
-                  ToId::pos_integer()|odi:rid(), Record::{Class::string(), Data::record()}) -> ok.
+                  ToId::pos_integer()|odi:rid(), Record::{Class::string(), Data:: record_data()}) -> ok.
 create_edge(T, TempId, FromId, ToId, Record) ->
     gen_server:call(T, {create_edge, TempId, FromId, ToId, Record}).
 
-%%TODO: update and delete
+-spec update(T::pid(), Rid::odi:rid(), Data:: record_data()) -> ok.
+update(T, Rid, Data) ->
+    gen_server:call(T, {update, Rid, Data}).
+
+%%TODO: delete
 
 -spec commit(T::pid(), TxId::pos_integer()) -> IdRemaps::#{integer() => odi:rid()}.
 commit(T, TxId) ->
@@ -123,6 +127,8 @@ handle_call({create_edge, TempId, FromId, ToId, {Class, Data}}, _From, #state{cl
     State3 = add_edge_ref(rid(ToId), Rid, "in_" ++ Class, State2),
     State4 = add_create_command(Rid, TranslatedRecord,State3),
     {reply, ok, State4};
+handle_call({update, Rid, Data}, _From, State) ->
+    {reply, ok, update_impl(rid(Rid), Data, State)};
 handle_call({commit, TxId}, _From, #state{con=Con, commands=Commands}=State) ->
     ?odi_debug_graph("Committing ~p~n", [Commands]),
     {Ids, _Update, _Changes} = odi:tx_commit(Con, TxId, true, Commands),
@@ -214,9 +220,9 @@ rid({_ClusterId, _ClusterPosition}=Id) ->
 rid(_TempPosition) when is_integer(_TempPosition) ->
     {-1, _TempPosition}.
 
-add_edge_ref(VertexId, EdgeId, PropertyName, #state{command_pos =CreateCommandPos}=State) ->
+add_edge_ref(VertexId, EdgeId, PropertyName, #state{command_pos=CommandPos}=State) ->
     ?odi_debug_graph("Trying to find ~p for updating ~p~n", [VertexId, PropertyName]),
-    case CreateCommandPos of
+    case CommandPos of
         #{VertexId := VertexCommandPos} ->
             add_edge_ref_to_transaction(VertexCommandPos, EdgeId, PropertyName, State);
         _ ->
@@ -234,8 +240,7 @@ add_edge_ref_to_transaction(VertexCommandPos, EdgeId, PropertyName, #state{comma
             NewData = add_edge_ref_to_data(Data, PropertyName, EdgeId),
             {update, Rid, document, Version, true, {Class, NewData}}
     end,
-    NewCommands = lists:sublist(Commands, VertexCommandPos - 1) ++ [NewCommand] ++
-        lists:nthtail(VertexCommandPos, Commands),
+    NewCommands = replace_nths(NewCommand, VertexCommandPos, Commands),
     State#state{commands = NewCommands}.
 
 add_edge_ref_to_existing(VertexId, EdgeId, PropertyName, #state{con=Con}=State) ->
@@ -253,18 +258,23 @@ add_edge_ref_to_data(Data, PropertyName, EdgeId) ->
     end.
 
 
-add_create_command(Rid, Record, #state{commands=Commands, command_pos =CommandPos}=State) ->
+add_create_command(Rid, Record, #state{commands=Commands, command_pos=CommandPos}=State) ->
     State#state{
         commands=Commands ++ [{create, Rid, document, Record}],
         command_pos =CommandPos#{Rid => length(Commands) + 1}
     }.
 
 
-add_update_command(Rid, Version, Record, #state{commands=Commands, command_pos =CommandPos}=State) ->
+add_update_command(Rid, Version, Record, #state{commands=Commands, command_pos=CommandPos}=State) ->
     State#state{
         commands=Commands ++ [{update, Rid, document, Version, true, Record}],
         command_pos =CommandPos#{Rid => length(Commands) + 1}
     }.
+
+
+replace_nths(Value, N, List) ->
+    lists:sublist(List, N - 1) ++ [Value] ++
+        lists:nthtail(N, List).
 
 
 get_id_remaps([], Map) ->
@@ -273,3 +283,38 @@ get_id_remaps([{{-1, OldId}, NewRid} | Rest], Map) ->
     get_id_remaps(Rest, Map#{OldId => NewRid});
 get_id_remaps([{Rid, Rid} | Rest], Map) ->
     get_id_remaps(Rest, Map).
+
+
+update_impl(Rid, Data, #state{command_pos=CommandPos, con=Con}=State) ->
+    ?odi_debug_graph("Trying to find ~p for updating data~n", [Rid]),
+    case CommandPos of
+        #{Rid := VertexCommandPos} ->
+            update_in_transaction(VertexCommandPos, Data, State);
+        _ ->
+            update_existing(Con, Rid, Data, State)
+    end.
+
+
+update_in_transaction(VertexCommandPos, UpdateData, #state{commands=Commands}=State) ->
+    NewCommand = case lists:nth(VertexCommandPos, Commands) of
+                     {create, Rid, document, {Class, Data}} ->
+                         ?odi_debug_graph("updating ~p in create ~p~n", [UpdateData, Rid]),
+                         NewData = update_data(Class, Data, UpdateData, State),
+                         {create, Rid, document, {Class, NewData}};
+                     {update, Rid, document, Version, true, {Class, Data}} ->
+                         ?odi_debug_graph("updating ~p in update ~p~n", [UpdateData, Rid]),
+                         NewData = update_data(Class, Data, UpdateData, State),
+                         {update, Rid, document, Version, true, {Class, NewData}}
+                 end,
+    NewCommands = replace_nths(NewCommand, VertexCommandPos, Commands),
+    State#state{commands = NewCommands}.
+
+update_existing(Con, Rid, UpdateData, State) ->
+    ?odi_debug_graph("fetching ~p to update ~p~n", [Rid, UpdateData]),
+    [{true, document, Version, Class, Data}] = odi:record_load(Con, Rid, "", true),
+    NewData = update_data(Class, Data, UpdateData, State),
+    add_update_command(Rid, Version, {Class, NewData}, State).
+
+update_data(Class, Orig, Updates, #state{classes=Classes}) ->
+    {Class, TypifiedUpdates} = odi_typed:typify_record({Class, Updates}, Classes),
+    maps:merge(Orig, TypifiedUpdates).
