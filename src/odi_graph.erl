@@ -10,6 +10,7 @@
     delete/3,
     query/4,
     record_load/3,
+    get_cache/1,
     commit/2
 ]).
 
@@ -75,6 +76,10 @@ query(T, Query, Limit, FetchPlan) ->
 
 record_load(T, Rid, FetchPlan) ->
     gen_server:call(T, {record_load , Rid, FetchPlan}).
+
+-spec get_cache(T::pid()) -> [odi:fetched_record()].
+get_cache(T) ->
+    gen_server:call(T, {get_cache}).
 
 -spec commit(T::pid(), TxId::pos_integer()) -> IdRemaps::#{integer() => odi:rid()}.
 commit(T, TxId) ->
@@ -157,6 +162,8 @@ handle_call({query , Query, Limit, FetchPlan}, _From, #state{con=Con}=State) ->
 handle_call({record_load , Rid, FetchPlan}, _From, State) ->
     {Record, State2} = record_load_impl(Rid, FetchPlan, State),
     {reply, untypify_results(Record), State2};
+handle_call({get_cache}, _From, #state{cache=Cache}=State) ->
+    {reply, untypify_results(maps:values(Cache)), State};
 handle_call({commit, TxId}, _From, #state{con=Con, commands=Commands}=State) ->
     ?odi_debug_graph("Committing ~p~n", [Commands]),
     {Ids, _Update, _Changes} = odi:tx_commit(Con, TxId, true, Commands),
