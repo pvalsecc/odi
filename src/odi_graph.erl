@@ -389,4 +389,4 @@ untypify_results({Rid, document, Version, Class, Data}) ->
 untypify_results([]) ->
     [];
 untypify_results([Cur | Rest]) ->
-    [untypify_results(Cur) | Rest].
+    [untypify_results(Cur) | untypify_results(Rest)].
