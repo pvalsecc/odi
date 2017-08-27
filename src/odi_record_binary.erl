@@ -39,22 +39,28 @@ decode_record($d, Bin, GlobalBin, GlobalProperties) ->
     {{0, Class}, BinHeaders} = decode([byte, string], Bin, GlobalBin),
     ?odi_debug_record("decode_record class=~s~n", [Class]),
     {HeadersReversed, BinData} = decode_headers(BinHeaders, [], GlobalBin, GlobalProperties),
-    {MinRestData, Data} = lists:foldr(fun({FieldName, CurDataOffset, DataType}, {PrevMinRestData, PrevData}) ->
-        case CurDataOffset of
-            0 ->
-                ?odi_debug_record("Decode null field ~s (~p)~n", [FieldName, DataType]),
-                {PrevMinRestData, maps:put(FieldName, {DataType, null}, PrevData)};
-            _ ->
-                <<_Before:CurDataOffset/binary, CurData/binary>> = GlobalBin,
-                ?odi_debug_record("Decode field ~p (~p) +~p~n", [FieldName, DataType, CurDataOffset]),
-                {Value, RestData} = decode(DataType, CurData, GlobalBin),
-                {min(PrevMinRestData, byte_size(RestData)), maps:put(FieldName, {DataType, Value}, PrevData)}
-        end
-    end, {byte_size(BinData), #{}}, HeadersReversed),
+    {MinRestData, Data} = decode_data(GlobalBin, BinData, HeadersReversed),
     ?odi_debug_record("decode_record MinRestData=~p: ~p~n",[MinRestData, Data]),
     {Class, Data, binary_part(BinData, byte_size(BinData), -MinRestData)};
 decode_record($b, Bin, _GlobalBin, _GlobalProperties) ->
     {raw, Bin, <<>>}.
+
+decode_data(GlobalBin, BinData, HeadersReversed) ->
+    {MinRestData, Data} = lists:foldr(
+        fun({FieldName, CurDataOffset, DataType}, {PrevMinRestData, PrevData}) ->
+            case CurDataOffset of
+                0 ->
+                    ?odi_debug_record("Decode null field ~s (~p)~n", [FieldName, DataType]),
+                    {PrevMinRestData, maps:put(FieldName, {DataType, null}, PrevData)};
+                _ ->
+                    <<_Before:CurDataOffset/binary, CurData/binary>> = GlobalBin,
+                    ?odi_debug_record("Decode field ~p (~p) +~p~n", [FieldName, DataType, CurDataOffset]),
+                    {Value, RestData} = decode(DataType, CurData, GlobalBin),
+                    {min(PrevMinRestData, byte_size(RestData)), maps:put(FieldName, {DataType, Value},
+                        PrevData)}
+            end
+        end, {byte_size(BinData), #{}}, HeadersReversed),
+    {MinRestData, Data}.
 
 decode_headers(<<0:8, Rest/binary>>, PrevHeaders, _GlobalBin, _GlobalProperties) ->
     ?odi_debug_record("no more headers~n", []),
@@ -224,6 +230,12 @@ decode(embedded_list, Bin, GlobalBin) ->
     decode_list(Num, decode_type(Type), List, [], GlobalBin);
 decode(embedded_set, Bin, GlobalBin) ->
     decode(embedded_list, Bin, GlobalBin);
+decode(embedded_map, Bin, GlobalBin) ->
+    {Size, HeadersBin} = decode(varint, Bin, GlobalBin),
+    {HeadersReversed, BinData} = decode_embedded_map_headers(Size, HeadersBin, GlobalBin, []),
+    {MinRestData, Data} = decode_data(GlobalBin, BinData, HeadersReversed),
+    ?odi_debug_record("decode_record MinRestData=~p: ~p~n",[MinRestData, Data]),
+    {Data, binary_part(BinData, byte_size(BinData), -MinRestData)};
 decode(any, <<Type:8, Bin/binary>>, GlobalBin) ->
     DecodedType = decode_type(Type),
     ?odi_debug_record("decode(any, ~p)~n", [DecodedType]),
@@ -263,6 +275,14 @@ decode_link_map(0, Bin, Map, _GlobalBin) ->
 decode_link_map(Remains, Bin, Map, GlobalBin) ->
     {{7, Key, Link}, Rest} = decode([byte, string, link], Bin, GlobalBin),
     decode_link_map(Remains - 1, Rest, Map#{Key => Link}, GlobalBin).
+
+decode_embedded_map_headers(0, Bin, _GlobalBin, List) ->
+    {List, Bin};
+decode_embedded_map_headers(Size, <<KeyTypeBin:?o_byte, Bin/binary>>, GlobalBin, List) ->
+    KeyType = decode_type(KeyTypeBin),
+    {{Key, DataPointer, ValueType}, Rest} = decode([KeyType, int32, byte], Bin, GlobalBin),
+    decode_embedded_map_headers(Size - 1, Rest, GlobalBin,
+                                [{Key, DataPointer, decode_type(ValueType)} | List]).
 
 encode_type(bool) -> 0;
 encode_type(integer) -> 1;
@@ -316,6 +336,8 @@ decode_type(23) -> any.
 
 convert_type("BOOLEAN") ->
     bool;
+convert_type("EMBEDDEDMAP") ->
+    embedded_map;
 convert_type(Type) ->
     list_to_atom(string:lowercase(Type)).
 
