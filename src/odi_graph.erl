@@ -11,7 +11,8 @@
     query/4,
     record_load/3,
     get_cache/1,
-    commit/2
+    commit/2,
+    rollback/1
 ]).
 
 %% gen_server callbacks
@@ -70,7 +71,7 @@ delete(T, Rid, Version) ->
     gen_server:call(T, {delete, Rid, Version}).
 
 -spec query(T::pid(), Query::string(), Limit::integer(), FetchPlan::string()|default) ->
-    [odi:fetched_record()].
+    [odi:fetched_record()] | odi:error().
 query(T, Query, Limit, FetchPlan) ->
     gen_server:call(T, {query , Query, Limit, FetchPlan}).
 
@@ -81,9 +82,13 @@ record_load(T, Rid, FetchPlan) ->
 get_cache(T) ->
     gen_server:call(T, {get_cache}).
 
--spec commit(T::pid(), TxId::pos_integer()) -> IdRemaps::#{integer() => odi:rid()}.
+-spec commit(T::pid(), TxId::pos_integer()) -> IdRemaps::#{integer() => odi:rid()} | odi:error().
 commit(T, TxId) ->
     gen_server:call(T, {commit, TxId}).
+
+-spec rollback(T::pid()) -> ok.
+rollback(T) ->
+    gen_server:stop(T, normal, 1000).
 
 
 %%%===================================================================
@@ -157,8 +162,12 @@ handle_call({update, Rid, Data}, _From, State) ->
 handle_call({delete, Rid, Version}, _From, State) ->
     {reply, ok, delete_impl(rid(Rid), Version, State)};
 handle_call({query , Query, Limit, FetchPlan}, _From, #state{con=Con}=State) ->
-    {Results, ForCache} = odi:query(Con, Query, Limit, FetchPlan),
-    {reply, untypify_results(Results), cache_records(Results, cache_records(ForCache, State))};
+    case odi:query(Con, Query, Limit, FetchPlan) of
+        {error, Messages} ->
+            {reply, {error, Messages}, State};
+        {Results, ForCache} ->
+            {reply, untypify_results(Results), cache_records(Results, cache_records(ForCache, State))}
+    end;
 handle_call({record_load , Rid, FetchPlan}, _From, State) ->
     {Record, State2} = record_load_impl(Rid, FetchPlan, State),
     {reply, untypify_results(Record), State2};
@@ -166,8 +175,12 @@ handle_call({get_cache}, _From, #state{cache=Cache}=State) ->
     {reply, untypify_results(maps:values(Cache)), State};
 handle_call({commit, TxId}, _From, #state{con=Con, commands=Commands}=State) ->
     ?odi_debug_graph("Committing ~p~n", [Commands]),
-    {Ids, _Update, _Changes} = odi:tx_commit(Con, TxId, true, Commands),
-    {stop, normal, get_id_remaps(Ids, #{}), State};
+    case odi:tx_commit(Con, TxId, true, Commands) of
+        {error, Messages} ->
+            {stop, normal, {error, Messages}, State};
+        {Ids, _Update, _Changes} ->
+            {stop, normal, get_id_remaps(Ids, #{}), State}
+    end;
 handle_call(Request, _From, State) ->
     io:format("Unknown call: ~p~n", [Request]),
     {reply, ok, State}.

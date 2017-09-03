@@ -38,9 +38,13 @@ typify_field(K, V, Strict, Properties, Classes) ->
 
     end.
 
-%% TODO: embedded_list, embedded_set, embedded_map, linkbag, any
+%% TODO: embedded_map, linkbag, any
 typify_known_field(V, #{"type" := 9}, Classes) ->
     {embedded, typify_record({[], V}, Classes)};
+typify_known_field(V, #{"type" := 10}, _Classes) ->
+    {embedded_list, lists:map(fun typify_unknown_field/1, V)};
+typify_known_field(V, #{"type" := 11}, _Classes) ->
+    {embedded_set, lists:map(fun typify_unknown_field/1, V)};
 typify_known_field(V, #{"type" := Type}, _Classes) ->
     {odi_record_binary:decode_type(Type), V}.
 

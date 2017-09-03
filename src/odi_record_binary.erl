@@ -125,7 +125,7 @@ encode({embedded_list, L}, Offset) ->
     {<<Header/binary, Body/binary>>, ListOffset + byte_size(Body)};
 encode({embedded_set, L}, Offset) ->
     encode({embedded_list, L}, Offset);
-%TODO: embedded_list, embedded_map, decimal
+%TODO: embedded_map, decimal
 encode({link, {ClusterId, RecordPosition}}, Offset) ->
     encode([{varint, ClusterId}, {varint, RecordPosition}], Offset);
 encode({link_list, Links}, Offset) ->
