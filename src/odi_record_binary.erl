@@ -338,6 +338,10 @@ convert_type("BOOLEAN") ->
     bool;
 convert_type("EMBEDDEDMAP") ->
     embedded_map;
+convert_type("EMBEDDEDLIST") ->
+    embedded_list;
+convert_type("EMBEDDEDSET") ->
+    embedded_set;
 convert_type(Type) ->
     list_to_atom(string:lowercase(Type)).
 
