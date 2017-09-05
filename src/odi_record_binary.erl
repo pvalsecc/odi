@@ -1,4 +1,5 @@
 %% https://orientdb.com/docs/last/Record-Schemaless-Binary-Serialization.html
+%% https://github.com/orientechnologies/orientdb/blob/master/core/src/main/java/com/orientechnologies/orient/core/serialization/serializer/record/binary/ORecordSerializerNetworkV0.java
 -module(odi_record_binary).
 
 %% API
@@ -109,7 +110,8 @@ encode({double, N}, Offset) ->
 encode({string, S}, Offset) when is_atom(S) ->
     encode({string, atom_to_list(S)}, Offset);
 encode({string, S}, Offset) ->
-    encode([{varint, length(S)}, list_to_binary(S)], Offset);
+    Flat = lists:flatten(S),
+    encode([{varint, length(Flat)}, list_to_binary(Flat)], Offset);
 encode({binary, S}, Offset) ->
     encode([{varint, byte_size(S)}, S], Offset);
 encode({embedded, {Class, Data}}, Offset) ->

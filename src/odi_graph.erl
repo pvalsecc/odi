@@ -75,6 +75,7 @@ delete(T, Rid, Version) ->
 query(T, Query, Limit, FetchPlan) ->
     gen_server:call(T, {query , Query, Limit, FetchPlan}).
 
+-spec record_load(T::pid(), Rid::odi:rid(), FetchPlan::string()) -> odi:fetched_record()|null.
 record_load(T, Rid, FetchPlan) ->
     gen_server:call(T, {record_load , Rid, FetchPlan}).
 
@@ -382,9 +383,13 @@ record_load_impl(Rid, FetchPlan, #state{con=Con, cache=Cache}=State) ->
             {Record, State};
         _ ->
             ?odi_debug_graph("Cache miss for ~p~n", [Rid]),
-            [{true, document, Version, Class, Data} | Rest] = odi:record_load(Con, Rid, FetchPlan, true),
-            FixedRecord = {Rid, document, Version, Class, Data},
-            {FixedRecord, cache_records([FixedRecord], cache_records(Rest, State))}
+            case odi:record_load(Con, Rid, FetchPlan, true) of
+                [{true, document, Version, Class, Data} | Rest] ->
+                    FixedRecord = {Rid, document, Version, Class, Data},
+                    {FixedRecord, cache_records([FixedRecord], cache_records(Rest, State))};
+                [] ->
+                    {null, State}
+            end
     end.
 
 
@@ -396,7 +401,8 @@ index_records([], Acc) ->
 index_records([Cur | Rest], Acc) ->
     index_records(Rest, Acc#{element(1, Cur) => Cur}).
 
-
+untypify_results(null) ->
+    null;
 untypify_results({Rid, document, Version, Class, Data}) ->
     {Rid, document, Version, Class, odi_typed:untypify_record(Data)};
 untypify_results([]) ->
