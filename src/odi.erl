@@ -23,6 +23,7 @@
          query/4,
          command/2,
          script/3,
+         live_query/3,
          tx_commit/4]).
 
 -include("../include/odi.hrl").
@@ -179,6 +180,9 @@ command(C, SQL) ->
 -spec script(C::pid(), Language::string(), Code::string()) -> {[fetched_record()], [fetched_record()]} | error().
 script(C, Language, Code) ->
     call(C, {command, {script, Language, Code}, sync}).
+
+live_query(C, SQL, CallBack) ->
+    call(C, {command, {select, SQL, -1, ""}, live}).
 
 %Commits a transaction. This operation flushes all the pending changes to the server side.
 %   Operations: [{OperationType, ClusterId, ClusterPosition, RecordType}]

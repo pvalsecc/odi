@@ -56,7 +56,8 @@
 -define(O_DB_RELOAD, 73).
 -define(O_DB_LIST, 74).
 -define(O_PUSH_RECORD, 74).  %% deprecated
--define(O_PUSH_DISTRIB_CONFIG, 74).  %% deprecated
+-define(O_PUSH_DISTRIB_CONFIG, 80).  %% deprecated
+-define(O_PUSH_LIVE_QUERY, 81).
 -define(O_DB_COPY, 90).  %% deprecated
 -define(O_REPLICATION, 91).  %% deprecated
 -define(O_CLUSTER, 91).

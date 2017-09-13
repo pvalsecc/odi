@@ -19,6 +19,7 @@
 -record(state, {mod,    %socket module: gen_tcp or ssl(unsupported)
                 sock,   %opened socket
                 session_id = -1, %OrientDB session Id
+                token = <<>>,
                 open_mode = wait_version, %connection opened with: connect() | db_open()
                 data = <<>>, %received data from socket
                 queue = queue:new(), %commands queue
@@ -124,13 +125,10 @@ code_change(_OldVsn, State, _Extra) ->
 %           (user-name:string)(user-password:string)
 %  Response: (session-id:int)(token:bytes)
 command({connect, Host, Username, Password, Opts}, State) ->
-    % % storing login data in the process dictionary for security reasons?
-    % put(username, Username),
-    % put(password, Password),
     {ok, State2} = pre_connect(State, Host, Opts),
     sendRequest(State2, ?O_CONNECT,
         [string, string, short, string, string, bool, bool, bool, string, string],
-        [?O_DRV_NAME, ?O_DRV_VER, ?O_PROTO_VER, null, ?O_RECORD_SERIALIZER_BINARY, false, false, false, Username, Password]),
+        [?O_DRV_NAME, ?O_DRV_VER, ?O_PROTO_VER, null, ?O_RECORD_SERIALIZER_BINARY, false, true, false, Username, Password]),
     {noreply, State2};
 
 %This is the first operation the client should call. It opens a database on the remote OrientDB Server.
@@ -142,16 +140,14 @@ command({connect, Host, Username, Password, Opts}, State) ->
 %           (cluster-config:bytes)(orientdb-release:string)
 %dbType = document | graph.
 command({db_open, Host, DBName, Username, Password, Opts}, State) ->
-    % % storing login data in the process dictionary for security reasons?
-    % put(username, Username),
-    % put(password, Password),
     case pre_connect(State, Host, Opts) of
         {error, _} = E -> {noreply, finish(State, E)};
         {ok, State2} ->
+            TokenSession = true,
             sendRequest(State2, ?O_DB_OPEN,
                 [string, string, short, string, string, bool, bool, bool, string, string, string],
-                [?O_DRV_NAME, ?O_DRV_VER, ?O_PROTO_VER, null, ?O_RECORD_SERIALIZER_BINARY, false,
-                false, false, DBName, Username, Password]),
+                [?O_DRV_NAME, ?O_DRV_VER, ?O_PROTO_VER, null, ?O_RECORD_SERIALIZER_BINARY, TokenSession,
+                true, false, DBName, Username, Password]),
             {noreply, State2}
     end;
 
@@ -278,14 +274,17 @@ command({record_delete, ClusterId, ClusterPosition, RecordVersion, Mode}, State)
 %   Response:
 %   - synchronous commands: [(synch-result-type:byte)[(synch-result-content:?)]]+
 %   - asynchronous commands: [(asynch-result-type:byte)[(asynch-result-content:?)]*](pre-fetched-record-size)[(pre-fetched-record)]*+
-command({command, Query, sync}, State) ->
+command({command, Query, Mode}, State) ->
     CommandPayload = case Query of
         {select, QueryText, Limit, FetchPlan} ->
             %% (class-name:string)(text:string)(non-text-limit:int)[(fetch-plan:string)](serialized-params:bytes[])
+            ClassName = case Mode of
+                live -> "com.orientechnologies.orient.core.sql.query.OLiveQuery";
+                _ -> "q"
+            end,
             odi_bin:encode(
                 [string, string, integer, string, bytes],
-                ["q", QueryText, Limit, FetchPlan,
-                 <<>>]);  % TODO: support params
+                [ClassName, QueryText, Limit, FetchPlan, <<>>]);  % TODO: support params
         {command, Text} ->
             %% (class-name:string)(text:string)(has-simple-parameters:boolean)(simple-paremeters:bytes[])(has-complex-parameters:boolean)(complex-parameters:bytes[])
             odi_bin:encode([string, string, bool, bool], ["c", Text, false, false]);  % TODO: support params
@@ -295,7 +294,7 @@ command({command, Query, sync}, State) ->
     end,
     sendRequest(State, ?O_COMMAND,
         [byte, bytes],
-        [$s, CommandPayload]),
+        [odi_bin:mode_to_char(Mode), CommandPayload]),
     {noreply, State};
 
 %generic_query:$s,CommandPayload("com.orientechnologies.orient.core.sql.OCommandSQL",QueryText)
@@ -326,9 +325,14 @@ pre_connect(State, Host, Opts) ->
         {error, _} = E -> E
     end.
 
-sendRequest(#state{mod = Mod, sock = Sock, session_id = SessionId}, CommandType, Types, Values) ->
+sendRequest(#state{mod = Mod, sock = Sock, session_id = SessionId, token = <<>>},
+            CommandType, Types, Values) ->
     Data = <<CommandType:?o_byte, SessionId:?o_int, (iolist_to_binary(odi_bin:encode(Types, Values)))/binary>>,
-    %erlang:display({send, binary_to_list(Data)}),
+    do_send(Mod, Sock, Data);
+sendRequest(#state{mod = Mod, sock = Sock, session_id = SessionId, token=Token},
+            CommandType, Types, Values) ->
+    Data = <<CommandType:?o_byte, SessionId:?o_int,
+             (iolist_to_binary(odi_bin:encode([bytes | Types], [Token | Values])))/binary>>,
     do_send(Mod, Sock, Data).
 
 % port_command() more efficient then gen_tcp:send()
@@ -378,12 +382,17 @@ command_tag(State) ->
 %% -- backend message handling --
 
 %main loop
-loop(#state{data = Data, timeout = Timeout} = State) -> %timeout = Timeout
+loop(#state{data = <<3:?o_byte, _SessionId:?o_int, Command/binary>>} = State) ->
+    %% A push
+    ?odi_debug_sock("Received push: 0x~s~n", [hex:bin_to_hexstr(Command)]),
+    {noreply, on_push(Command, State)};
+loop(#state{data = Data, timeout = Timeout} = State) ->
     Cmd = command_tag(State),
     %erlang:display({recv, Cmd, binary_to_list(Data)}),
     %erlang:display({recv, Cmd, size(Data)}),
     case Cmd of
-        none -> {noreply, #state{data = <<>>}};
+        none ->
+            {noreply, State#state{data = <<>>}};
         _ ->
             case byte_size(Data) > 0 of
                 true ->
@@ -399,34 +408,67 @@ loop(#state{data = Data, timeout = Timeout} = State) -> %timeout = Timeout
             end
     end.
 
+
+%% 51 REQUEST_PUSH_LIVE_QUERY
+%% 00000027  Length
+%% 72  r=RECORD
+%% 03  CREATED
+%% 0E69925A QUERY_TOKEN
+%% 64 d=DOCUMENT
+%% 00000001  RecordVersion
+%% 0019  ClusterId
+%% 0000000000000000  ClusterPosition
+%% 0000000E 0008546573742F0000000C000258
+on_push(<<?O_PUSH_LIVE_QUERY:?o_byte, Length:?o_int, Bin:Length/binary,
+          Rest/binary>>, #state{global_properties = GlobalProperties} = State) ->
+    {{$r, Operation, QueryToken, RecordType, RecordVersion, ClusterId, RecordPosition, RecordBin}, Rest} =
+        odi_bin:decode([byte, byte, integer, byte, integer, short, long, bytes], Bin),
+    {Class, Data, <<>>} = odi_record_binary:decode_record(RecordType, RecordBin, RecordBin, GlobalProperties),
+    ?odi_debug_sock("Got a live record ~p: ~s ~p~n", [operation_to_atom(Operation), Class, Data]),
+    %% TODO: send notification
+    State#state{data = Rest}.
+
+
 %Process empty response message
 on_empty_response(Bin, State) ->
-    <<Status:?o_byte, _SessionId:?o_int, Message/binary>> = Bin,
+    {Status, Message, State2} = response_header(State, Bin),
     case Status of
         1 -> {ErrorInfo,Rest} = odi_bin:decode_error(Message),
-            State2 = finish(State#state{data = Rest}, {error, ErrorInfo});
-        0 -> State2 = finish(State#state{data = Message}, ok)
+            State3 = finish(State2#state{data = Rest}, {error, ErrorInfo});
+        0 -> State3 = finish(State2#state{data = Message}, ok)
     end,
-    {noreply, State2}.
+    {noreply, State3}.
 
 %Process response message without changing State (excl. Data)
 on_simple_response(Bin, State, Format) ->
     try
-        <<Status:?o_byte, _SessionId:?o_int, Message/binary>> = Bin,
+        {Status, Message, State2} = response_header(State, Bin),
         case Status of
             1 ->
                 {ErrorInfo,Rest} = odi_bin:decode_error(Message),
                 ?odi_debug_sock("Got an error: ~p~n", [ErrorInfo]),
-                State2 = finish(State#state{data = Rest}, {error, ErrorInfo});
+                State3 = finish(State2#state{data = Rest}, {error, ErrorInfo});
             0 ->
                 {Result, Rest} = odi_bin:decode(Format, Message),
-                State2 = finish(State#state{data = Rest}, Result)
+                State3 = finish(State2#state{data = Rest}, Result)
         end,
-        {noreply, State2}
+        {noreply, State3}
     catch
         X:Y ->
             ?odi_debug_sock("Error while parsing simple response: ~p:~p~n~p~n", [X, Y, erlang:get_stacktrace()]),
             {fetch_more, State}
+    end.
+
+
+response_header(#state{token = <<>>} = State,
+                <<Status:?o_byte, _OldSessionId:?o_int, Message/binary>>) ->
+    {Status, Message, State};
+
+response_header(#state{token = _Token} = State,
+                <<Status:?o_byte, _OldSessionId:?o_int, TokenLen:?o_int, NewToken:TokenLen/binary, Message/binary>>) ->
+    case NewToken of
+        <<>> -> {Status, Message, State};
+        _ -> {Status, Message, State#state{token = NewToken}}
     end.
 
 
@@ -463,10 +505,10 @@ on_response(db_open, Bin, #state{sock = Sock, open_mode = wait_answer} = State) 
                 gen_tcp:close(Sock),
                 {noreply, finish(State#state{data = Rest}, {error, ErrorInfo})};
             0 ->
-                {{SessionId, _Token, ClusterParams, ClusterConfig, _OrientdbRelease}, Rest}
+                {{SessionId, Token, ClusterParams, ClusterConfig, _OrientdbRelease}, Rest}
                     = odi_bin:decode([integer, bytes, {short, [string, short]}, bytes, string], Message),
-                {noreply, finish(State#state{session_id = SessionId, open_mode = db_open, data = Rest},
-                    {ClusterParams, ClusterConfig})};
+                {noreply, finish(State#state{session_id = SessionId, open_mode = db_open, data = Rest,
+                                             token = Token}, {ClusterParams, ClusterConfig})};
              _ ->
                 gen_tcp:close(Sock),
                 {noreply, finish(State#state{data = <<>>}, {error, error_server_response, Bin})}
@@ -516,23 +558,23 @@ on_response(record_create, Bin, State) ->
 
 % Response: [(payload-status:byte)[(record-content:bytes)(record-version:int)(record-type:byte)]*]+
 on_response(record_load, Bin, State) ->
-    <<Status:?o_byte, _SessionId:?o_int, Message/binary>> = Bin,
+    {Status, Message, State2} = response_header(State, Bin),
     try case Status of
         1 ->
             {ErrorInfo,Rest} = odi_bin:decode_error(Message),
-            {noreply, finish(State#state{data = Rest}, {error, ErrorInfo})};
+            {noreply, finish(State2#state{data = Rest}, {error, ErrorInfo})};
         0 ->
-            {Records, Rest} = decode_records_iterable(Message, State#state.global_properties, []),
-            State2 = case current_command(State) of
+            {Records, Rest} = decode_records_iterable(Message, State2#state.global_properties, []),
+            State3 = case current_command(State2) of
                 {record_load, 0, 1, "*:-1 index:0", true} ->
                     [{true, document, _Version, _Class, RawSchemas}] = Records,
                     GlobalProperties = odi_typed:index_global_properties(odi_typed:untypify_record(RawSchemas)),
                     ?odi_debug_sock("Capturing the GlobalProperties: ~p~n", [GlobalProperties]),
-                    State#state{global_properties=GlobalProperties};
+                    State2#state{global_properties=GlobalProperties};
                 _ ->
-                    State
+                    State2
             end,
-            {noreply, finish(State2#state{data = Rest}, Records)}
+            {noreply, finish(State3#state{data = Rest}, Records)}
         end
     catch
         X:Y ->
@@ -552,18 +594,18 @@ on_response(record_delete, Bin, State) ->
 % Response:
 % - synchronous commands: [(synch-result-type:byte)[(synch-result-content:?)]]+
 on_response(command, Bin, State) ->
-    <<Status:?o_byte, _SessionId:?o_int, Message/binary>> = Bin,
+    {Status, Message, State2} = response_header(State, Bin),
     try case Status of
         1 -> {ErrorInfo,Rest} = odi_bin:decode_error(Message),
-            {noreply, finish(State#state{data = Rest}, {error, ErrorInfo})};
+            {noreply, finish(State2#state{data = Rest}, {error, ErrorInfo})};
         0 ->
-            {Results, Rest} = decode_command_answer(Message, State),
-            {noreply, finish(State#state{data = Rest}, Results)}
+            {Results, Rest} = decode_command_answer(Message, State2),
+            {noreply, finish(State2#state{data = Rest}, Results)}
         end
     catch
         X:Y ->
             ?odi_debug_sock("Error while parsing command response: ~p:~p~n~p~n", [X, Y, erlang:get_stacktrace()]),
-            {fetch_more, State}
+            {fetch_more, State2}
     end;
 
 % Response: Response: (created-record-count:int)[
@@ -653,6 +695,12 @@ decode_record_list(0, Rest, _GlobalProperties, Acc) ->
 decode_record_list(N, Bin, GlobalProperties, Acc) ->
     {Record, Rest} = decode_record(Bin, GlobalProperties),
     decode_record_list(N - 1, Rest, GlobalProperties, [Record | Acc]).
+
+
+operation_to_atom(0) -> loaded;
+operation_to_atom(1) -> updated;
+operation_to_atom(2) -> deleted;
+operation_to_atom(3) -> created.
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").

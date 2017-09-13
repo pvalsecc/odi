@@ -13,7 +13,8 @@
          encode_record_vc/1,
          decode_linked_record/1,
          decode_record_list/3,
-         mode_to_byte/1]).
+         mode_to_byte/1,
+         mode_to_char/1]).
 
 -include("../include/odi.hrl").
 
@@ -203,3 +204,7 @@ decode_linked_record(<<Data/binary>>) ->
 mode_to_byte(sync) -> 0;
 mode_to_byte(async) -> 1;
 mode_to_byte(no_response) -> 2.
+
+mode_to_char(async) -> $a;
+mode_to_char(sync) -> $s;
+mode_to_char(live) -> $l.

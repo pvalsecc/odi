@@ -1,11 +1,3 @@
-%%%-------------------------------------------------------------------
-%%% @author patrick
-%%% @copyright (C) 2017, <COMPANY>
-%%% @doc
-%%%
-%%% @end
-%%% Created : 31. Jul 2017 14:22
-%%%-------------------------------------------------------------------
 -module(odi_graph_SUITE).
 -include_lib("common_test/include/ct.hrl").
 
