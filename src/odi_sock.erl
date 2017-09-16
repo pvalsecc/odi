@@ -24,7 +24,8 @@
                 data = <<>>, %received data from socket
                 queue = queue:new(), %commands queue
                 timeout = 5000, %network timeout
-                global_properties = #{}
+                global_properties = #{},
+                callbacks = #{}
                 }).
 
 %% -- client interface --
@@ -278,13 +279,17 @@ command({command, Query, Mode}, State) ->
     CommandPayload = case Query of
         {select, QueryText, Limit, FetchPlan} ->
             %% (class-name:string)(text:string)(non-text-limit:int)[(fetch-plan:string)](serialized-params:bytes[])
-            ClassName = case Mode of
-                live -> "com.orientechnologies.orient.core.sql.query.OLiveQuery";
-                _ -> "q"
-            end,
+            Mode = sync,
             odi_bin:encode(
                 [string, string, integer, string, bytes],
-                [ClassName, QueryText, Limit, FetchPlan, <<>>]);  % TODO: support params
+                ["q", QueryText, Limit, FetchPlan, <<>>]);  % TODO: support params
+        {live, QueryText, Limit, FetchPlan, _CallBack} ->
+            %% (class-name:string)(text:string)(non-text-limit:int)[(fetch-plan:string)](serialized-params:bytes[])
+            Mode = live,
+            odi_bin:encode(
+                [string, string, integer, string, bytes],
+                ["com.orientechnologies.orient.core.sql.query.OLiveQuery", QueryText, Limit, FetchPlan,
+                    <<>>]);  % TODO: support params
         {command, Text} ->
             %% (class-name:string)(text:string)(has-simple-parameters:boolean)(simple-paremeters:bytes[])(has-complex-parameters:boolean)(complex-parameters:bytes[])
             odi_bin:encode([string, string, bool, bool], ["c", Text, false, false]);  % TODO: support params
@@ -385,7 +390,10 @@ command_tag(State) ->
 loop(#state{data = <<3:?o_byte, _SessionId:?o_int, Command/binary>>} = State) ->
     %% A push
     ?odi_debug_sock("Received push: 0x~s~n", [hex:bin_to_hexstr(Command)]),
-    {noreply, on_push(Command, State)};
+    case on_push(Command, State) of
+        #state{data = <<>>} = State2 -> {noreply, State2};
+        State2 -> loop(State2)
+    end;
 loop(#state{data = Data, timeout = Timeout} = State) ->
     Cmd = command_tag(State),
     %erlang:display({recv, Cmd, binary_to_list(Data)}),
@@ -409,25 +417,30 @@ loop(#state{data = Data, timeout = Timeout} = State) ->
     end.
 
 
-%% 51 REQUEST_PUSH_LIVE_QUERY
-%% 00000027  Length
-%% 72  r=RECORD
-%% 03  CREATED
-%% 0E69925A QUERY_TOKEN
-%% 64 d=DOCUMENT
-%% 00000001  RecordVersion
-%% 0019  ClusterId
-%% 0000000000000000  ClusterPosition
-%% 0000000E 0008546573742F0000000C000258
-on_push(<<?O_PUSH_LIVE_QUERY:?o_byte, Length:?o_int, Bin:Length/binary,
-          Rest/binary>>, #state{global_properties = GlobalProperties} = State) ->
-    {{$r, Operation, QueryToken, RecordType, RecordVersion, ClusterId, RecordPosition, RecordBin}, Rest} =
-        odi_bin:decode([byte, byte, integer, byte, integer, short, long, bytes], Bin),
-    {Class, Data, <<>>} = odi_record_binary:decode_record(RecordType, RecordBin, RecordBin, GlobalProperties),
-    ?odi_debug_sock("Got a live record ~p: ~s ~p~n", [operation_to_atom(Operation), Class, Data]),
-    %% TODO: send notification
-    State#state{data = Rest}.
+on_push(<<Command:?o_byte, Length:?o_int, Bin:Length/binary, Rest/binary>>, State) ->
+    State2 = handle_push(Command, Bin, State),
+    State2#state{data = Rest}.
 
+
+handle_push(?O_PUSH_LIVE_QUERY, Bin,
+            #state{global_properties = GlobalProperties, callbacks = CallBacks} = State) ->
+    {{MessageType, Operation, QueryToken, RecordType, RecordVersion, ClusterId, RecordPosition, RecordBin}, <<>>} =
+        odi_bin:decode([byte, byte, integer, byte, integer, short, long, bytes], Bin),
+    case MessageType of
+        $r ->
+            {Class, Data, <<>>} = odi_record_binary:decode_record(RecordType, RecordBin, RecordBin, GlobalProperties),
+            OperationAtom = operation_to_atom(Operation),
+            ?odi_debug_sock("Got a live record ~p: ~s ~p~n", [OperationAtom, Class, Data]),
+            #{QueryToken := CallBack} = CallBacks,
+            CallBack(live, {OperationAtom, {{ClusterId, RecordPosition}, document, RecordVersion, Class, Data}}),
+            State;
+        $u ->
+            ?odi_debug_sock("Got a live unsubscription~n", []),
+            State#state{callbacks=maps:remove(QueryToken, CallBacks)}
+    end;
+handle_push(Command, Bin, State) ->
+    ?odi_debug_sock("Unkwnown push command ~p: ~p~n", [Command, Bin]),
+    State.
 
 %Process empty response message
 on_empty_response(Bin, State) ->
@@ -600,7 +613,16 @@ on_response(command, Bin, State) ->
             {noreply, finish(State2#state{data = Rest}, {error, ErrorInfo})};
         0 ->
             {Results, Rest} = decode_command_answer(Message, State2),
-            {noreply, finish(State2#state{data = Rest}, Results)}
+            State3 = case current_command(State2) of
+                {command, {live, _SQL, _Limit, _FetchPlan, CallBack}, live} ->
+                    %% that was a subscription to a live query
+                    {[{{-1, -1}, document, 0, "", #{"token" := {integer, Token}}}],[]} = Results,
+                    PrevCallBacks = State2#state.callbacks,
+                    State2#state{callbacks = PrevCallBacks#{Token => CallBack}};
+                _ ->
+                    State2
+            end,
+            {noreply, finish(State3#state{data = Rest}, Results)}
         end
     catch
         X:Y ->

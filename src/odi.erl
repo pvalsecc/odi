@@ -181,8 +181,10 @@ command(C, SQL) ->
 script(C, Language, Code) ->
     call(C, {command, {script, Language, Code}, sync}).
 
+-spec live_query(C::pid(), SQL::string(),
+                 CallBack::fun((live, {loaded|updated|deleted|created, fetched_record()}) -> any())) -> any().
 live_query(C, SQL, CallBack) ->
-    call(C, {command, {select, SQL, -1, ""}, live}).
+    call(C, {command, {live, SQL, -1, "", CallBack}, live}).
 
 %Commits a transaction. This operation flushes all the pending changes to the server side.
 %   Operations: [{OperationType, ClusterId, ClusterPosition, RecordType}]
