@@ -466,6 +466,8 @@ on_simple_response(Bin, State, Format) ->
         end,
         {noreply, State3}
     catch
+        throw:not_enough_data ->
+            {fetch_more, State};
         Class:Reason ->
             lager:warning("Error while parsing simple response: ~s",
                 [lager:pr_stacktrace(erlang:get_stacktrace(), {Class, Reason})]),
@@ -590,6 +592,8 @@ on_response(record_load, Bin, State) ->
             {noreply, finish(State3#state{data = Rest}, Records)}
         end
     catch
+        throw:not_enough_data ->
+            {fetch_more, State2};
         Class:Reason ->
             lager:warning("Error while parsing record_load response: ~s",
                 [lager:pr_stacktrace(erlang:get_stacktrace(), {Class, Reason})]),
@@ -626,6 +630,8 @@ on_response(command, Bin, State) ->
             {noreply, finish(State3#state{data = Rest}, Results)}
         end
     catch
+        throw:not_enough_data ->
+            {fetch_more, State2};
         Class:Reason ->
             lager:warning("Error while parsing command response: ~s",
                 [lager:pr_stacktrace(erlang:get_stacktrace(), {Class, Reason})]),

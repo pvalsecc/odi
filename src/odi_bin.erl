@@ -63,6 +63,8 @@ decode(bytes, <<-1:?o_int, Rest/binary>>) ->
     {null, Rest};
 decode(bytes, <<Len:?o_int, Bytes:Len/binary, Rest/binary>>) ->
     {Bytes, Rest};
+decode(bytes, <<_Len:?o_int, _Rest/binary>>) ->
+    throw(not_enough_data);
 decode(string, <<-1:?o_int, Rest/binary>>) ->
     {null, Rest};
 decode(string, Bin) ->
@@ -76,7 +78,8 @@ decode({zero_end, TypeList}, Bin) ->
   decode_tuples_zero(TypeList, Bin);
 decode({CountType, TypeList}, Bin) ->
 	decode_tuples(CountType, TypeList, Bin);
-decode(Type, Bin)                         -> {{decode_error, Type, Bin}}.
+decode(Type, Bin)                         ->
+    {{decode_error, Type, Bin}}.
 
 decode_tuple(TypeList, Bin) ->
 	decode_tuple(TypeList, Bin, []).
@@ -105,8 +108,12 @@ decode_tuples(Count, TypeList, Bin, ValuesAcc) ->
       Error -> Error
   end.
 
+
 decode_tuples_zero(TypeList, Bin) ->
   decode_tuples_zero(TypeList, Bin, []).
+
+decode_tuples_zero(_TypeList, <<>>, _ValuesAcc) ->
+    throw(not_enough_data);
 decode_tuples_zero(_TypeList, <<0:?o_byte, Rest/binary>>, ValuesAcc) ->
   {{length(ValuesAcc), lists:reverse(ValuesAcc)}, Rest};
 decode_tuples_zero(TypeList, Bin, ValuesAcc) ->
@@ -114,6 +121,7 @@ decode_tuples_zero(TypeList, Bin, ValuesAcc) ->
     {Values, Rest} -> decode_tuples_zero(TypeList, Rest, [Values | ValuesAcc]);
     Error -> Error
   end.
+
 
 encode_record_type(RecordType) ->
     {_, Code} = lists:keyfind(RecordType, 1, [{raw, $b}, {flat, $f}, {document, $d}]),
