@@ -10,14 +10,31 @@
 -include_lib("common_test/include/ct.hrl").
 
 %% API
--export([all/0, init_per_testcase/2, end_per_testcase/2]).
+-export([all/0, init_per_testcase/2, end_per_testcase/2, init_lager/0]).
 
 -export([stats/1, record/1, query/1, command/1, tx/1]).
 
 all() ->
     [stats, record, query, command, tx].
 
+init_lager() ->
+    _ = application:stop(lager),
+    application:set_env(lager, suppress_application_start_stop, true),
+    application:set_env(lager, handlers,
+        [
+            {lager_common_test_backend, [debug, {lager_default_formatter, [
+                severity, " ",
+                {module, [" [", module, ":", function, "] "], [" [] "]},
+                message
+            ]}]}
+        ]),
+    ok = lager:start(),
+    %% we care more about getting all of our messages here than being
+    %% careful with the amount of memory that we're using.
+    error_logger_lager_h:set_high_water(100000).
+
 init_per_testcase(_TestCase, Config) ->
+    init_lager(),
     {ok, Admin} = odi:connect("localhost", "root", "root", []),
     ok = odi:db_create(Admin, "test", "graph", "plocal", null),
     ok = odi:close(Admin),

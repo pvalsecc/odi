@@ -3,8 +3,6 @@
 %% API
 -export([typify_record/2, untypify_record/1, index_global_properties/1, index_records/3]).
 
--include("odi_debug.hrl").
-
 typify_record({Class, Data}, Classes) ->
     #{Class := ClassDef} = Classes,
     #{"strictMode" := StrictMode} = ClassDef,
@@ -33,7 +31,7 @@ typify_field(K, V, Strict, Properties, Classes) ->
         {#{K := Property}, _} ->
             typify_known_field(V, Property, Classes);
         {_, false} ->
-            ?odi_debug_graph("Unknown field: ~p~n", [K]),
+            lager:debug("Unknown field: ~p", [K]),
             typify_unknown_field(V)
 
     end.

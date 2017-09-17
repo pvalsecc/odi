@@ -23,8 +23,6 @@
     terminate/2,
     code_change/3]).
 
--include("odi_debug.hrl").
-
 -define(SERVER, ?MODULE).
 
 -type record_data()::#{string()|atom() => any()}.
@@ -118,8 +116,8 @@ init([Con]) ->
     Schema = odi_typed:untypify_record(RawSchemas),
     Classes = index_classes(Schema),
     GlobalProperties = odi_typed:index_global_properties(Schema),
-    ?odi_debug_graph("Classes: ~p~n", [Classes]),
-    ?odi_debug_graph("GlobalProperties: ~p~n", [GlobalProperties]),
+    lager:debug("Classes: ~p", [Classes]),
+    lager:debug("GlobalProperties: ~p", [GlobalProperties]),
 
 %%    Indexes = odi:record_load(Con, {0, 2}, "*:-1 index:0", true),
 %%    io:format("Indexes: ~p~n", [Indexes]),
@@ -146,13 +144,13 @@ init([Con]) ->
     {stop, Reason :: term(), NewState :: #state{}}).
 handle_call({create_vertex, TempId, Record}, _From, #state{classes=Classes}=State) ->
     TranslatedRecord = odi_typed:typify_record(Record, Classes),
-    ?odi_debug_graph("Translated: ~p~n", [TranslatedRecord]),
+    lager:debug("Translated: ~p", [TranslatedRecord]),
     State2 = add_create_command(rid(TempId), TranslatedRecord, State),
     {reply, ok, State2};
 handle_call({create_edge, TempId, FromId, ToId, {Class, Data}}, _From, #state{classes=Classes}=State) ->
     LinkedData = Data#{"out" => rid(FromId), "in" => rid(ToId)},
     TranslatedRecord = odi_typed:typify_record({Class, LinkedData}, Classes),
-    ?odi_debug_graph("Translated edge: ~p~n", [TranslatedRecord]),
+    lager:debug("Translated edge: ~p", [TranslatedRecord]),
     Rid = rid(TempId),
     State2 = add_edge_ref(rid(FromId), Rid, "out_" ++ Class, State),
     State3 = add_edge_ref(rid(ToId), Rid, "in_" ++ Class, State2),
@@ -175,7 +173,7 @@ handle_call({record_load , Rid, FetchPlan}, _From, State) ->
 handle_call({get_cache}, _From, #state{cache=Cache}=State) ->
     {reply, untypify_results(maps:values(Cache)), State};
 handle_call({commit, TxId}, _From, #state{con=Con, commands=Commands}=State) ->
-    ?odi_debug_graph("Committing ~p~n", [Commands]),
+    lager:debug("Committing ~p", [Commands]),
     case odi:tx_commit(Con, TxId, true, Commands) of
         {error, Messages} ->
             {stop, normal, {error, Messages}, State};
@@ -183,7 +181,7 @@ handle_call({commit, TxId}, _From, #state{con=Con, commands=Commands}=State) ->
             {stop, normal, get_id_remaps(Ids, #{}), State}
     end;
 handle_call(Request, _From, State) ->
-    io:format("Unknown call: ~p~n", [Request]),
+    lager:error("Unknown call: ~p", [Request]),
     {reply, ok, State}.
 
 %%--------------------------------------------------------------------
@@ -198,7 +196,7 @@ handle_call(Request, _From, State) ->
     {noreply, NewState :: #state{}, timeout() | hibernate} |
     {stop, Reason :: term(), NewState :: #state{}}).
 handle_cast(Request, State) ->
-    io:format("Unknown cast: ~p~n", [Request]),
+    lager:error("Unknown cast: ~p", [Request]),
     {noreply, State}.
 
 %%--------------------------------------------------------------------
@@ -216,7 +214,7 @@ handle_cast(Request, State) ->
     {noreply, NewState :: #state{}, timeout() | hibernate} |
     {stop, Reason :: term(), NewState :: #state{}}).
 handle_info(Info, State) ->
-    io:format("Unknown info: ~p~n", [Info]),
+    lager:error("Unknown info: ~p", [Info]),
     {noreply, State}.
 
 %%--------------------------------------------------------------------
@@ -270,7 +268,7 @@ rid(_TempPosition) when is_integer(_TempPosition) ->
     {-1, _TempPosition}.
 
 add_edge_ref(VertexId, EdgeId, PropertyName, #state{command_pos=CommandPos}=State) ->
-    ?odi_debug_graph("Trying to find ~p for updating ~p~n", [VertexId, PropertyName]),
+    lager:debug("Trying to find ~p for updating ~p", [VertexId, PropertyName]),
     case CommandPos of
         #{VertexId := VertexCommandPos} ->
             add_edge_ref_to_transaction(VertexCommandPos, EdgeId, PropertyName, State);
@@ -281,11 +279,11 @@ add_edge_ref(VertexId, EdgeId, PropertyName, #state{command_pos=CommandPos}=Stat
 add_edge_ref_to_transaction(VertexCommandPos, EdgeId, PropertyName, #state{commands=Commands}=State) ->
     NewCommand = case lists:nth(VertexCommandPos, Commands) of
         {create, Rid, document, {Class, Data}} ->
-            ?odi_debug_graph("updating ~p in create ~p~n", [PropertyName, Rid]),
+            lager:debug("updating ~p in create ~p", [PropertyName, Rid]),
             NewData = add_edge_ref_to_data(Data, PropertyName, EdgeId),
             {create, Rid, document, {Class, NewData}};
         {update, Rid, document, Version, true, {Class, Data}} ->
-            ?odi_debug_graph("updating ~p in update ~p~n", [PropertyName, Rid]),
+            lager:debug("updating ~p in update ~p", [PropertyName, Rid]),
             NewData = add_edge_ref_to_data(Data, PropertyName, EdgeId),
             {update, Rid, document, Version, true, {Class, NewData}}
     end,
@@ -293,7 +291,7 @@ add_edge_ref_to_transaction(VertexCommandPos, EdgeId, PropertyName, #state{comma
     State#state{commands = NewCommands}.
 
 add_edge_ref_to_existing(VertexId, EdgeId, PropertyName, State) ->
-    ?odi_debug_graph("fetching ~p to update ~p~n", [VertexId, PropertyName]),
+    lager:debug("fetching ~p to update ~p", [VertexId, PropertyName]),
     {{VertexId, document, Version, Class, Data}, State2} = record_load_impl(VertexId, "", State),
     NewData = add_edge_ref_to_data(Data, PropertyName, EdgeId),
     add_update_command(VertexId, Version, {Class, NewData}, State2).
@@ -335,7 +333,7 @@ get_id_remaps([{Rid, Rid} | Rest], Map) ->
 
 
 update_impl(Rid, Data, #state{command_pos=CommandPos}=State) ->
-    ?odi_debug_graph("Trying to find ~p for updating data~n", [Rid]),
+    lager:debug("Trying to find ~p for updating data", [Rid]),
     case CommandPos of
         #{Rid := VertexCommandPos} ->
             update_in_transaction(VertexCommandPos, Data, State);
@@ -347,11 +345,11 @@ update_impl(Rid, Data, #state{command_pos=CommandPos}=State) ->
 update_in_transaction(VertexCommandPos, UpdateData, #state{commands=Commands}=State) ->
     NewCommand = case lists:nth(VertexCommandPos, Commands) of
                      {create, Rid, document, {Class, Data}} ->
-                         ?odi_debug_graph("updating ~p in create ~p~n", [UpdateData, Rid]),
+                         lager:debug("updating ~p in create ~p", [UpdateData, Rid]),
                          NewData = update_data(Class, Data, UpdateData, State),
                          {create, Rid, document, {Class, NewData}};
                      {update, Rid, document, Version, true, {Class, Data}} ->
-                         ?odi_debug_graph("updating ~p in update ~p~n", [UpdateData, Rid]),
+                         lager:debug("updating ~p in update ~p", [UpdateData, Rid]),
                          NewData = update_data(Class, Data, UpdateData, State),
                          {update, Rid, document, Version, true, {Class, NewData}}
                  end,
@@ -359,7 +357,7 @@ update_in_transaction(VertexCommandPos, UpdateData, #state{commands=Commands}=St
     State#state{commands = NewCommands}.
 
 update_existing(Rid, UpdateData, State) ->
-    ?odi_debug_graph("fetching ~p to update ~p~n", [Rid, UpdateData]),
+    lager:debug("fetching ~p to update ~p", [Rid, UpdateData]),
     {{Rid, document, Version, Class, Data}, State2} = record_load_impl(Rid, "", State),
     NewData = update_data(Class, Data, UpdateData, State2),
     add_update_command(Rid, Version, {Class, NewData}, State2).
@@ -379,10 +377,10 @@ delete_impl(Rid, Version, #state{commands=Commands, command_pos=CommandPos}=Stat
 record_load_impl(Rid, FetchPlan, #state{con=Con, cache=Cache}=State) ->
     case Cache of
         #{Rid := Record} ->
-            ?odi_debug_graph("Cache hit for ~p~n", [Rid]),
+            lager:debug("Cache hit for ~p", [Rid]),
             {Record, State};
         _ ->
-            ?odi_debug_graph("Cache miss for ~p~n", [Rid]),
+            lager:debug("Cache miss for ~p", [Rid]),
             case odi:record_load(Con, Rid, FetchPlan, true) of
                 [{true, document, Version, Class, Data} | Rest] ->
                     FixedRecord = {Rid, document, Version, Class, Data},

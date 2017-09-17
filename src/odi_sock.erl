@@ -14,7 +14,6 @@
 -export([on_response/3, command/2]).
 
 -include("../include/odi.hrl").
--include("odi_debug.hrl").
 
 -record(state, {mod,    %socket module: gen_tcp or ssl(unsupported)
                 sock,   %opened socket
@@ -86,12 +85,12 @@ handle_info(timeout, State) ->
 % Receive messages from socket:
 % on socket close
 handle_info({Closed, Sock}, #state{sock = Sock} = State) when Closed == tcp_closed; Closed == ssl_closed ->
-    ?odi_debug_sock("Socket closed by the remote side~n", []),
+    lager:debug("Socket closed by the remote side", []),
     {stop, sock_closed, flush_queue(State, {error, sock_closed})};
 
 % on socket error
 handle_info({Error, Sock, Reason}, #state{sock = Sock} = State) when Error == tcp_error; Error == ssl_error ->
-    ?odi_debug_sock("Socket error: ~p~n", [Reason]),
+    lager:debug("Socket error: ~p", [Reason]),
     Why = {sock_error, Reason},
     {stop, Why, flush_queue(State, {error, Why})};
 
@@ -101,7 +100,7 @@ handle_info({inet_reply, _, ok}, State) ->
 
 % socket is not ok
 handle_info({inet_reply, Reason, Status}, State) ->
-    ?odi_debug_sock("Socket not OK: ~p~n", [Reason]),
+    lager:warning("Socket not OK: ~p", [Reason]),
     {stop, Status, flush_queue(State, {error, Status})};
 
 % receive data from socket
@@ -342,7 +341,7 @@ sendRequest(#state{mod = Mod, sock = Sock, session_id = SessionId, token=Token},
 
 % port_command() more efficient then gen_tcp:send()
 do_send(gen_tcp, Sock, Bin) ->
-    ?odi_debug_sock("Sending: 0x~s~n", [hex:bin_to_hexstr(Bin)]),
+    lager:debug("Sending: 0x~s", [hex:bin_to_hexstr(Bin)]),
     try erlang:port_command(Sock, Bin) of
         true ->
             ok
@@ -389,7 +388,7 @@ command_tag(State) ->
 %main loop
 loop(#state{data = <<3:?o_byte, _SessionId:?o_int, Command/binary>>} = State) ->
     %% A push
-    ?odi_debug_sock("Received push: 0x~s~n", [hex:bin_to_hexstr(Command)]),
+    lager:debug("Received push: 0x~s", [hex:bin_to_hexstr(Command)]),
     case on_push(Command, State) of
         #state{data = <<>>} = State2 -> {noreply, State2};
         State2 -> loop(State2)
@@ -404,7 +403,7 @@ loop(#state{data = Data, timeout = Timeout} = State) ->
         _ ->
             case byte_size(Data) > 0 of
                 true ->
-                    ?odi_debug_sock("Received: 0x~s~n", [hex:bin_to_hexstr(Data)]),
+                    lager:debug("Received: 0x~s", [hex:bin_to_hexstr(Data)]),
                     case on_response(Cmd, Data, State) of
                         {fetch_more, State2} -> {noreply, State2, Timeout};
                         {noreply, #state{data = <<>>} = State2} -> {noreply, State2};
@@ -430,16 +429,16 @@ handle_push(?O_PUSH_LIVE_QUERY, Bin,
         $r ->
             {Class, Data, <<>>} = odi_record_binary:decode_record(RecordType, RecordBin, RecordBin, GlobalProperties),
             OperationAtom = operation_to_atom(Operation),
-            ?odi_debug_sock("Got a live record ~p: ~s ~p~n", [OperationAtom, Class, Data]),
+            lager:debug("Got a live record ~p: ~s ~p", [OperationAtom, Class, Data]),
             #{QueryToken := CallBack} = CallBacks,
             CallBack(live, {OperationAtom, {{ClusterId, RecordPosition}, document, RecordVersion, Class, Data}}),
             State;
         $u ->
-            ?odi_debug_sock("Got a live unsubscription~n", []),
+            lager:debug("Got a live unsubscription", []),
             State#state{callbacks=maps:remove(QueryToken, CallBacks)}
     end;
 handle_push(Command, Bin, State) ->
-    ?odi_debug_sock("Unkwnown push command ~p: ~p~n", [Command, Bin]),
+    lager:warning("Unkwnown push command ~p: ~p", [Command, Bin]),
     State.
 
 %Process empty response message
@@ -459,7 +458,7 @@ on_simple_response(Bin, State, Format) ->
         case Status of
             1 ->
                 {ErrorInfo,Rest} = odi_bin:decode_error(Message),
-                ?odi_debug_sock("Got an error: ~p~n", [ErrorInfo]),
+                lager:warning("Got an error: ~p", [ErrorInfo]),
                 State3 = finish(State2#state{data = Rest}, {error, ErrorInfo});
             0 ->
                 {Result, Rest} = odi_bin:decode(Format, Message),
@@ -467,8 +466,9 @@ on_simple_response(Bin, State, Format) ->
         end,
         {noreply, State3}
     catch
-        X:Y ->
-            ?odi_debug_sock("Error while parsing simple response: ~p:~p~n~p~n", [X, Y, erlang:get_stacktrace()]),
+        Class:Reason ->
+            lager:warning("Error while parsing simple response: ~s",
+                [lager:pr_stacktrace(erlang:get_stacktrace(), {Class, Reason})]),
             {fetch_more, State}
     end.
 
@@ -487,7 +487,7 @@ response_header(#state{token = _Token} = State,
 
 on_response(_Command, Bin, #state{open_mode = wait_version} = State) ->
     <<Version:?o_short, Rest/binary>> = Bin,
-    ?odi_debug_sock("Got version ~p~n", [Version]),
+    lager:debug("Got version ~p", [Version]),
     true = Version >= ?O_PROTO_VER,
     {fetch_more, State#state{open_mode = wait_answer, data = Rest}};
 
@@ -582,7 +582,7 @@ on_response(record_load, Bin, State) ->
                 {record_load, 0, 1, "*:-1 index:0", true} ->
                     [{true, document, _Version, _Class, RawSchemas}] = Records,
                     GlobalProperties = odi_typed:index_global_properties(odi_typed:untypify_record(RawSchemas)),
-                    ?odi_debug_sock("Capturing the GlobalProperties: ~p~n", [GlobalProperties]),
+                    lager:debug("Capturing the GlobalProperties: ~p", [GlobalProperties]),
                     State2#state{global_properties=GlobalProperties};
                 _ ->
                     State2
@@ -590,9 +590,10 @@ on_response(record_load, Bin, State) ->
             {noreply, finish(State3#state{data = Rest}, Records)}
         end
     catch
-        X:Y ->
-            ?odi_debug_sock("Error while parsing record_load response: ~p:~p~n~p~n", [X, Y, erlang:get_stacktrace()]),
-            {fetch_more, State}
+        Class:Reason ->
+            lager:warning("Error while parsing record_load response: ~s",
+                [lager:pr_stacktrace(erlang:get_stacktrace(), {Class, Reason})]),
+            {fetch_more, State2}
     end;
 
 
@@ -625,8 +626,9 @@ on_response(command, Bin, State) ->
             {noreply, finish(State3#state{data = Rest}, Results)}
         end
     catch
-        X:Y ->
-            ?odi_debug_sock("Error while parsing command response: ~p:~p~n~p~n", [X, Y, erlang:get_stacktrace()]),
+        Class:Reason ->
+            lager:warning("Error while parsing command response: ~s",
+                [lager:pr_stacktrace(erlang:get_stacktrace(), {Class, Reason})]),
             {fetch_more, State2}
     end;
 

@@ -10,6 +10,7 @@ all() ->
     [create].
 
 init_per_testcase(_TestCase, Config) ->
+    odi_open_db_SUITE:init_lager(),
     {ok, Admin} = odi:connect("localhost", "root", "root", []),
     [{admin, Admin} | Config].
 

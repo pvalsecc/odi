@@ -6,7 +6,6 @@
 -export([encode_record/3, decode_record/4, decode_type/1]).
 
 -include("../include/odi.hrl").
--include("odi_debug.hrl").
 
 encode_record(Class, Fields, Offset) ->
     {Start, OffsetHeader} = encode([{byte, 0}, {string, Class}], Offset),
@@ -14,7 +13,7 @@ encode_record(Class, Fields, Offset) ->
         {HeaderStart, _} = encode([PrevHeader, {string, K}], OffsetHeader),
         {<<HeaderStart/binary, 0:32, (encode_type(Type)):8>>, [byte_size(HeaderStart) | PrevPos]}
     end, {<<>>, []}, Fields),
-    ?odi_debug_record("TmpHeaders=~p, HeaderPosReversed=~p~n", [TmpHeader, HeaderPosReversed]),
+    lager:debug("TmpHeaders=~p, HeaderPosReversed=~p", [TmpHeader, HeaderPosReversed]),
     DataOffset = OffsetHeader + byte_size(TmpHeader) + 1,
     {Data, DataPosReversed} = maps:fold(fun(_k, {Type, Value}, {PrevData, PrevPos}) ->
         case Value of
@@ -38,10 +37,10 @@ encode_record(Class, Fields, Offset) ->
 
 decode_record($d, Bin, GlobalBin, GlobalProperties) ->
     {{0, Class}, BinHeaders} = decode([byte, string], Bin, GlobalBin),
-    ?odi_debug_record("decode_record class=~s~n", [Class]),
+    lager:debug("decode_record class=~s", [Class]),
     {HeadersReversed, BinData} = decode_headers(BinHeaders, [], GlobalBin, GlobalProperties),
     {MinRestData, Data} = decode_data(GlobalBin, BinData, HeadersReversed),
-    ?odi_debug_record("decode_record MinRestData=~p: ~p~n",[MinRestData, Data]),
+    lager:debug("decode_record MinRestData=~p: ~p",[MinRestData, Data]),
     {Class, Data, binary_part(BinData, byte_size(BinData), -MinRestData)};
 decode_record($b, Bin, _GlobalBin, _GlobalProperties) ->
     {raw, Bin, <<>>}.
@@ -51,11 +50,11 @@ decode_data(GlobalBin, BinData, HeadersReversed) ->
         fun({FieldName, CurDataOffset, DataType}, {PrevMinRestData, PrevData}) ->
             case CurDataOffset of
                 0 ->
-                    ?odi_debug_record("Decode null field ~s (~p)~n", [FieldName, DataType]),
+                    lager:debug("Decode null field ~s (~p)", [FieldName, DataType]),
                     {PrevMinRestData, maps:put(FieldName, {DataType, null}, PrevData)};
                 _ ->
                     <<_Before:CurDataOffset/binary, CurData/binary>> = GlobalBin,
-                    ?odi_debug_record("Decode field ~p (~p) +~p~n", [FieldName, DataType, CurDataOffset]),
+                    lager:debug("Decode field ~p (~p) +~p", [FieldName, DataType, CurDataOffset]),
                     {Value, RestData} = decode(DataType, CurData, GlobalBin),
                     {min(PrevMinRestData, byte_size(RestData)), maps:put(FieldName, {DataType, Value},
                         PrevData)}
@@ -64,19 +63,19 @@ decode_data(GlobalBin, BinData, HeadersReversed) ->
     {MinRestData, Data}.
 
 decode_headers(<<0:8, Rest/binary>>, PrevHeaders, _GlobalBin, _GlobalProperties) ->
-    ?odi_debug_record("no more headers~n", []),
+    lager:debug("no more headers", []),
     {PrevHeaders, Rest};
 decode_headers(Header, PrevHeaders, GlobalBin, GlobalProperties) ->
     {Len, _Rest} = decode(varint, Header, GlobalBin),
     case Len >= 0 of
         true ->
             {{FieldName, DataOffset, DataType}, NextHeader} = decode([string, int32, byte], Header, GlobalBin),
-            ?odi_debug_record("new named field ~s ~p~n", [FieldName, decode_type(DataType)]),
+            lager:debug("new named field ~s ~p", [FieldName, decode_type(DataType)]),
             decode_headers(NextHeader, [{FieldName, DataOffset, decode_type(DataType)} | PrevHeaders], GlobalBin, GlobalProperties);
         false ->
             {{PropertyId, DataOffset}, NextHeader} = decode([varint, int32], Header, GlobalBin),
             FixedPropertyId = (PropertyId * -1) - 1,
-            ?odi_debug_record("new property ~p~n", [FixedPropertyId]),
+            lager:debug("new property ~p", [FixedPropertyId]),
             #{FixedPropertyId := PropertyDef} = GlobalProperties,
             #{"name" := Name, "type" := Type} = PropertyDef,
             decode_headers(NextHeader, [{Name, DataOffset, convert_type(Type)} | PrevHeaders], GlobalBin, GlobalProperties)
@@ -158,20 +157,20 @@ encode(L, Offset) when is_list(L) ->
     end, {<<>>, Offset}, L).
 
 decode(byte, <<N:?o_byte, Rest/binary>>, _GlobalBin) ->
-    ?odi_debug_record("decode(byte, ~p)~n", [N]),
+    lager:debug("decode(byte, ~p)", [N]),
     {N, Rest};
 decode(int32, <<N:?o_int, Rest/binary>>, _GlobalBin) ->
-    ?odi_debug_record("decode(int32, ~p)~n", [N]),
+    lager:debug("decode(int32, ~p)", [N]),
     {N, Rest};
 decode(bool, <<0:8, Rest/binary>>, _GlobalBin) ->
-    ?odi_debug_record("decode(bool, false)~n", []),
+    lager:debug("decode(bool, false)", []),
     {false, Rest};
 decode(bool, <<1:8, Rest/binary>>, _GlobalBin) ->
-    ?odi_debug_record("decode(bool, true)~n", []),
+    lager:debug("decode(bool, true)", []),
     {true, Rest};
 decode(varint, Bin, _GlobalBin) ->
     {N, Rest} =small_ints:decode_zigzag_varint(Bin),
-    ?odi_debug_record("decode(varint, ~p)~n", [N]),
+    lager:debug("decode(varint, ~p)", [N]),
     {N, Rest};
 decode(short, Bin, GlobalBin) ->
     decode(varint, Bin, GlobalBin);
@@ -184,51 +183,51 @@ decode(datetime, Bin, GlobalBin) ->
 decode(date, Bin, GlobalBin) ->
     decode(varint, Bin, GlobalBin);
 decode(float, <<N:?o_float, Rest/binary>>, _GlobalBin) ->
-    ?odi_debug_record("decode(float)~n", []),
+    lager:debug("decode(float)", []),
     {N, Rest};
 decode(double, <<N:?o_double, Rest/binary>>, _GlobalBin) ->
-    ?odi_debug_record("decode(double, ~p)~n", [N]),
+    lager:debug("decode(double, ~p)", [N]),
     {N, Rest};
 decode(string, Bin, GlobalBin) ->
-    ?odi_debug_record("decode(string)~n", []),
+    lager:debug("decode(string)", []),
     {Len, Rest} = decode(varint, Bin, GlobalBin),
     true = Len >= 0,
     <<Value:Len/binary, Rest2/binary>> = Rest,
-    ?odi_debug_record("Reading string len=~p: ~s~n", [Len, Value]),
+    lager:debug("Reading string len=~p: ~s", [Len, Value]),
     {binary_to_list(Value), Rest2};
 decode(binary, Bin, GlobalBin) ->
-    ?odi_debug_record("decode(binary)~n", []),
+    lager:debug("decode(binary)", []),
     {Len, Rest} = decode(varint, Bin, GlobalBin),
     <<Value:Len/binary, Rest2/binary>> = Rest,
     {Value, Rest2};
 decode(link, Bin, GlobalBin) ->
-    ?odi_debug_record("decode(link)~n", []),
+    lager:debug("decode(link)", []),
     decode([varint, varint], Bin, GlobalBin);
 decode(link_list, Bin, GlobalBin) ->
-    ?odi_debug_record("decode(link_list)~n", []),
+    lager:debug("decode(link_list)", []),
     {Len, Rest} = decode(varint, Bin, GlobalBin),
     decode_link_list(Len, Rest, [], GlobalBin);
 decode(link_set, Bin, GlobalBin) ->
-    ?odi_debug_record("decode(link_set)~n", []),
+    lager:debug("decode(link_set)", []),
     decode(link_list, Bin, GlobalBin);
 decode(link_map, Bin, GlobalBin) ->
-    ?odi_debug_record("decode(link_map)~n", []),
+    lager:debug("decode(link_map)", []),
     {Len, Rest} = decode(varint, Bin, GlobalBin),
     decode_link_map(Len, Rest, #{}, GlobalBin);
 decode(linkbag, <<0:6, 0:1, 1:1, Len:32, Links/binary>>, GlobalBin) ->
-    ?odi_debug_record("decode(linkbag, embedded, unassigned)~n", []),
+    lager:debug("decode(linkbag, embedded, unassigned)", []),
     decode_rid_list(Len, Links, [], GlobalBin);
 decode(linkbag, <<0:6, 1:1, 1:1, Uuid:128, Len:?o_int, Links/binary>>, GlobalBin) ->
-    ?odi_debug_record("decode(linkbag, embedded, assigned)~n", []),
+    lager:debug("decode(linkbag, embedded, assigned)", []),
     {List, Rest} = decode_rid_list(Len, Links, [], GlobalBin),
     {{Uuid, List}, Rest};
 decode(embedded, Bin, GlobalBin) ->
-    ?odi_debug_record("decode(embedded)~n", []),
+    lager:debug("decode(embedded)", []),
     {Class, Data, Rest} = decode_record($d, <<0:8, Bin/binary>>, GlobalBin, #{}),
     {{Class, Data}, Rest};
 decode(embedded_list, Bin, GlobalBin) ->
     {{Num, Type}, List} = decode([varint, byte], Bin, GlobalBin),
-    ?odi_debug_record("decode(embedded_list, ~p, ~p)~n", [Num, decode_type(Type)]),
+    lager:debug("decode(embedded_list, ~p, ~p)", [Num, decode_type(Type)]),
     decode_list(Num, decode_type(Type), List, [], GlobalBin);
 decode(embedded_set, Bin, GlobalBin) ->
     decode(embedded_list, Bin, GlobalBin);
@@ -236,15 +235,15 @@ decode(embedded_map, Bin, GlobalBin) ->
     {Size, HeadersBin} = decode(varint, Bin, GlobalBin),
     {HeadersReversed, BinData} = decode_embedded_map_headers(Size, HeadersBin, GlobalBin, []),
     {MinRestData, Data} = decode_data(GlobalBin, BinData, HeadersReversed),
-    ?odi_debug_record("decode_record MinRestData=~p: ~p~n",[MinRestData, Data]),
+    lager:debug("decode_record MinRestData=~p: ~p",[MinRestData, Data]),
     {Data, binary_part(BinData, byte_size(BinData), -MinRestData)};
 decode(any, <<Type:8, Bin/binary>>, GlobalBin) ->
     DecodedType = decode_type(Type),
-    ?odi_debug_record("decode(any, ~p)~n", [DecodedType]),
+    lager:debug("decode(any, ~p)", [DecodedType]),
     {Value, Rest} = decode(DecodedType, Bin, GlobalBin),
     {{DecodedType, Value}, Rest};
 decode(L, Bin, GlobalBin) when is_list(L) ->
-    ?odi_debug_record("decode(list)~n", []),
+    lager:debug("decode(list)", []),
     {Values, Rest} = decode_tuple(L, Bin, GlobalBin),
     {list_to_tuple(Values), Rest}.
 
