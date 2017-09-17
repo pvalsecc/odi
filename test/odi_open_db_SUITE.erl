@@ -132,7 +132,7 @@ tx(Config) ->
     {{VClusterId1, RecordPos1}, document, 1, "V", Data1fixed} = lists:keyfind({VClusterId1, RecordPos1}, 1, ResultsReadBack),
     {{VClusterId2, RecordPos2}, document, 1, "V", Data2fixed} = lists:keyfind({VClusterId2, RecordPos2}, 1, ResultsReadBack),
     2 = length(ResultsReadBack),
-    [{{17, 0}, document, 1, "E", DataEfixed}] = ResultsReadBackCache,
+    [{{EClusterId, ERecordPos}, document, 1, "E", DataEfixed}] = ResultsReadBackCache,
 
     Data1b = Data1fixed#{"toto" => {integer, 43}},
     ResultT2 = odi:tx_commit(Con, 2, true, [
@@ -143,7 +143,7 @@ tx(Config) ->
 
     {ResultsReadBack2, ResultsReadBackCache2} = odi:query(Con, "select from V", -1, default),
     [{{VClusterId1, RecordPos1}, document, 2, "V", Data1b}] = ResultsReadBack2,
-    [{{17, 0}, document, 1, "E", DataEfixed}] = ResultsReadBackCache2.  %% TODO: is it normal E keeps the out link to the deleted V?
+    [{{EClusterId, ERecordPos}, document, 1, "E", DataEfixed}] = ResultsReadBackCache2.  %% TODO: is it normal E keeps the out link to the deleted V?
 
 end_per_testcase(_TestCase, Config) ->
     Con = ?config(con, Config),

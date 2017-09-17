@@ -37,6 +37,7 @@ simple(Config) ->
 
     Data2 = #{"x" => {string, "Y"}},
     {2, []} = odi:record_update(Con2, Rid, false, {"V", Data2}, 1, sync),
+    io:format("XXX After UPDATE~n"),
 
     true = odi:record_delete(Con2, Rid, 2, sync),
     io:format("XXX After DELETE~n"),
