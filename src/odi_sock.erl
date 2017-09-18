@@ -386,10 +386,11 @@ command_tag(State) ->
 %% -- backend message handling --
 
 %main loop
-loop(#state{data = <<3:?o_byte, _SessionId:?o_int, Command/binary>>} = State) ->
+loop(#state{data = <<3:?o_byte, _SessionId:?o_int, Command/binary>>, timeout = Timeout} = State) ->
     %% A push
     lager:debug("Received push: 0x~s", [hex:bin_to_hexstr(Command)]),
     case on_push(Command, State) of
+        {fetch_more, State2} -> {noreply, State2, Timeout};
         #state{data = <<>>} = State2 -> {noreply, State2};
         State2 -> loop(State2)
     end;
@@ -418,15 +419,17 @@ loop(#state{data = Data, timeout = Timeout} = State) ->
 
 on_push(<<Command:?o_byte, Length:?o_int, Bin:Length/binary, Rest/binary>>, State) ->
     State2 = handle_push(Command, Bin, State),
-    State2#state{data = Rest}.
+    State2#state{data = Rest};
+on_push(_Data, State) ->
+    {fetch_more, State}.
 
 
-handle_push(?O_PUSH_LIVE_QUERY, Bin,
+handle_push(?O_PUSH_LIVE_QUERY, <<MessageType:?o_byte, Bin/binary>>,
             #state{global_properties = GlobalProperties, callbacks = CallBacks} = State) ->
-    {{MessageType, Operation, QueryToken, RecordType, RecordVersion, ClusterId, RecordPosition, RecordBin}, <<>>} =
-        odi_bin:decode([byte, byte, integer, byte, integer, short, long, bytes], Bin),
     case MessageType of
         $r ->
+            {{Operation, QueryToken, RecordType, RecordVersion, ClusterId, RecordPosition, RecordBin}, <<>>} =
+                odi_bin:decode([byte, integer, byte, integer, short, long, bytes], Bin),
             {Class, Data, <<>>} = odi_record_binary:decode_record(RecordType, RecordBin, RecordBin, GlobalProperties),
             OperationAtom = operation_to_atom(Operation),
             lager:debug("Got a live record ~p: ~s ~p", [OperationAtom, Class, Data]),
@@ -434,7 +437,10 @@ handle_push(?O_PUSH_LIVE_QUERY, Bin,
             CallBack(live, {OperationAtom, {{ClusterId, RecordPosition}, document, RecordVersion, Class, Data}}),
             State;
         $u ->
+            {QueryToken, <<>>} = odi_bin:decode(integer, Bin),
             lager:debug("Got a live unsubscription", []),
+            #{QueryToken := CallBack} = CallBacks,
+            CallBack(live_unsubscribe, {}),
             State#state{callbacks=maps:remove(QueryToken, CallBacks)}
     end;
 handle_push(Command, Bin, State) ->

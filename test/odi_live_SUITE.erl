@@ -21,10 +21,9 @@ simple(Config) ->
     Con = ?config(con, Config),
     TestPid = self(),
     io:format("XXX Before subcribing with LIVE SELECT~n"),
-    {[{{-1, -1}, document, 0, "", #{"token" := {integer, Token}}}],[]} =
-        odi:live_query(Con, "LIVE SELECT FROM Test", fun(What, Message) ->
-            TestPid ! {What, Message}
-        end),
+    {ok, Token} = odi:live_query(Con, "LIVE SELECT FROM Test", fun(What, Message) ->
+        TestPid ! {What, Message}
+    end),
     io:format("XXX After subcribing with LIVE SELECT: ~p~n", [Token]),
 
     {_Clusters, Con2} = odi:db_open("localhost", "test", "root", "root", []),
@@ -62,6 +61,24 @@ simple(Config) ->
             {live, {deleted, {Rid, document, 2, "Test", Data2}}} = Message3
     after
         5000 -> ct:fail("Didn't receive the deleted notification")
+    end,
+
+    io:format("XXX Before UNSUBSCRIBE~n"),
+    [{{-1,-1}, document,0,[], #{"unsubscribe" := {bool,true}}}] =
+        odi:command(Con, io_lib:format("LIVE UNSUBSCRIBE ~p", [Token])),
+
+    receive
+        Message4 ->
+            {live_unsubscribe, {}} = Message4
+    after
+        5000 -> ct:fail("Didn't receive the unsubscription notification")
+    end,
+
+    receive
+        Message5 ->
+            ct:fail("Unexpected message: ~p", [Message5])
+    after
+        200 -> ok
     end.
 
 
