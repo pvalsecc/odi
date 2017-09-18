@@ -6,10 +6,16 @@ language: erlang
 otp_release:
   - 20.0
 
+env:
+  - ORIENTDB_VERSION=2.2.24
+  # TODO: this OrientDB release is still too broken: - ORIENTDB_VERSION=3.0.0m2
+
 install:
   - wget https://s3.amazonaws.com/rebar3/rebar3 && chmod +x rebar3
+
 before_script:
-  - ./startOrientdb.sh
+  - ./startOrientdb.sh ${ORIENTDB_VERSION}
+
 script:
   - rebar3 eunit
   - rebar3 ct

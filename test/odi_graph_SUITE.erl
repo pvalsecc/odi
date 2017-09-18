@@ -4,10 +4,10 @@
 %% API
 -export([all/0, init_per_testcase/2, end_per_testcase/2]).
 
--export([simple/1, two_steps/1, reading/1]).
+-export([simple/1, two_steps/1, two_steps_simple/1, reading/1]).
 
 all() ->
-    [simple, two_steps, reading].
+    [simple, two_steps, two_steps_simple, reading].
 
 init_per_testcase(TestCase, Config) ->
     NewConfig = odi_open_db_SUITE:init_per_testcase(TestCase, Config),
@@ -51,6 +51,25 @@ two_steps(Config) ->
         {"TestEdge", #{}}),
     ok = odi_graph:delete(Transaction2, maps:get(-6, IdRemaps1), 1),
     IdRemaps2 = odi_graph:commit(Transaction2, 2),
+
+    check_results(maps:merge(IdRemaps1, IdRemaps2), Con, 2).
+
+two_steps_simple(Config) ->
+    Con = ?config(con, Config),
+    {ok, Transaction1} = odi_graph:begin_transaction(Con),
+    ok = odi_graph:create_vertex(Transaction1, -2, {"Test", #{field1 => "hello", field2 => 12}}),
+    ok = odi_graph:create_vertex(Transaction1, -3, {"TestSub", #{field1 => "world", field2 => 44, field3 => true}}),
+    IdRemaps1 = odi_graph:commit(Transaction1, 1),
+    ct:log("RIDs=~p", [IdRemaps1]),
+
+    {ok, Transaction2} = odi_graph:begin_transaction(Con),
+    ok = odi_graph:update(Transaction2, maps:get(-2, IdRemaps1), #{field2 => 42}),
+    ok = odi_graph:create_edge(Transaction2, -4, maps:get(-2, IdRemaps1), maps:get(-3, IdRemaps1),
+        {"TestEdge", #{}}),
+    ok = odi_graph:create_edge(Transaction2, -5, maps:get(-2, IdRemaps1), maps:get(-3, IdRemaps1),
+        {"TestEdge", #{}}),
+    IdRemaps2 = odi_graph:commit(Transaction2, 2),
+    ct:log("RIDs2=~p", [IdRemaps2]),
 
     check_results(maps:merge(IdRemaps1, IdRemaps2), Con, 2).
 

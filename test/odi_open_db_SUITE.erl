@@ -133,6 +133,7 @@ script(Config) ->
 tx(Config) ->
     Con = ?config(con, Config),
 
+    ct:log("XXXX start of the action"),
     % Create two vertices linked with one edge (for some reason, for the RID to be remapped, the linkbags must have UUIDs.
     Data1 = #{"toto" => {integer, 42}, "tutu" => {string, "tutu"}, "out_" => {linkbag, {randUuid(), [{-1, -4}]}}},
     Data2 = #{"x" => {double, 4.5}, "in_" => {linkbag, {randUuid(), [{-1, -4}]}}},
@@ -152,6 +153,7 @@ tx(Config) ->
     DataEfixed = #{"in" => {link, {VClusterId1, RecordPos1}}, "out" => {link, {VClusterId2, RecordPos2}}},
 
     {ResultsReadBack, ResultsReadBackCache} = odi:query(Con, "select from V", -1, default),
+    ct:log("ResultsReadBack ~p", [ResultsReadBack]),
     {{VClusterId1, RecordPos1}, document, 1, "V", Data1fixed} = lists:keyfind({VClusterId1, RecordPos1}, 1, ResultsReadBack),
     {{VClusterId2, RecordPos2}, document, 1, "V", Data2fixed} = lists:keyfind({VClusterId2, RecordPos2}, 1, ResultsReadBack),
     2 = length(ResultsReadBack),
@@ -165,6 +167,7 @@ tx(Config) ->
     {[], [{{VClusterId1, RecordPos1}, 2}], []} = ResultT2,
 
     {ResultsReadBack2, ResultsReadBackCache2} = odi:query(Con, "select from V", -1, default),
+    ct:log("ResultsReadBack2=~p ResultsReadBackCache2=~p", [ResultsReadBack2, ResultsReadBackCache2]),
     [{{VClusterId1, RecordPos1}, document, 2, "V", Data1b}] = ResultsReadBack2,
     [{{EClusterId, ERecordPos}, document, 1, "E", DataEfixed}] = ResultsReadBackCache2.  %% TODO: is it normal E keeps the out link to the deleted V?
 

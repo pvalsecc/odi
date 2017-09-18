@@ -14,7 +14,8 @@
 
 -define(O_DRV_NAME, <<"OrientDB Erlang Client">>).
 -define(O_DRV_VER, <<"0.1">>).
--define(O_PROTO_VER, 36).
+-define(O_PROTO_VER_MIN, 36).
+-define(O_PROTO_VER_MAX, 37).
 
 -define(O_RECORD_SERIALIZER_BINARY, <<"ORecordSerializerBinary">>).
 

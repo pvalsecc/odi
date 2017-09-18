@@ -19,12 +19,13 @@
                 sock,   %opened socket
                 session_id = -1, %OrientDB session Id
                 token = <<>>,
-                open_mode = wait_version, %connection opened with: connect() | db_open()
+                open_mode = not_connected, %connection opened with: connect() | db_open()
                 data = <<>>, %received data from socket
                 queue = queue:new(), %commands queue
                 timeout = 10000, %network timeout
                 global_properties = #{},
-                callbacks = #{}
+                callbacks = #{},
+                version = null
                 }).
 
 %% -- client interface --
@@ -125,11 +126,16 @@ code_change(_OldVsn, State, _Extra) ->
 %           (user-name:string)(user-password:string)
 %  Response: (session-id:int)(token:bytes)
 command({connect, Host, Username, Password, Opts}, State) ->
-    {ok, State2} = pre_connect(State, Host, Opts),
-    sendRequest(State2, ?O_CONNECT,
-        [string, string, short, string, string, bool, bool, bool, string, string],
-        [?O_DRV_NAME, ?O_DRV_VER, ?O_PROTO_VER, null, ?O_RECORD_SERIALIZER_BINARY, false, true, false, Username, Password]),
-    {noreply, State2};
+    case pre_connect(State, Host, Opts) of
+        {error, _} = E ->
+            {noreply, finish(State, E)};
+        {ok, State2} ->
+            sendRequest(State2, ?O_CONNECT,
+                [string, string, short, string, string, bool, bool, bool, string, string],
+                [?O_DRV_NAME, ?O_DRV_VER, State2#state.version, null, ?O_RECORD_SERIALIZER_BINARY, false, true,
+                    false, Username, Password]),
+            {noreply, State2}
+    end;
 
 %This is the first operation the client should call. It opens a database on the remote OrientDB Server.
 %Returns the Session-Id to being reused for all the next calls and the list of configured clusters.
@@ -141,12 +147,13 @@ command({connect, Host, Username, Password, Opts}, State) ->
 %dbType = document | graph.
 command({db_open, Host, DBName, Username, Password, Opts}, State) ->
     case pre_connect(State, Host, Opts) of
-        {error, _} = E -> {noreply, finish(State, E)};
+        {error, _} = E ->
+            {noreply, finish(State, E)};
         {ok, State2} ->
             TokenSession = true,
             sendRequest(State2, ?O_DB_OPEN,
                 [string, string, short, string, string, bool, bool, bool, string, string, string],
-                [?O_DRV_NAME, ?O_DRV_VER, ?O_PROTO_VER, null, ?O_RECORD_SERIALIZER_BINARY, TokenSession,
+                [?O_DRV_NAME, ?O_DRV_VER, State2#state.version, null, ?O_RECORD_SERIALIZER_BINARY, TokenSession,
                 true, false, DBName, Username, Password]),
             {noreply, State2}
     end;
@@ -275,30 +282,28 @@ command({record_delete, ClusterId, ClusterPosition, RecordVersion, Mode}, State)
 %   - synchronous commands: [(synch-result-type:byte)[(synch-result-content:?)]]+
 %   - asynchronous commands: [(asynch-result-type:byte)[(asynch-result-content:?)]*](pre-fetched-record-size)[(pre-fetched-record)]*+
 command({command, Query, Mode}, State) ->
-    CommandPayload = case Query of
+    {Mode, CommandPayload} = case Query of
         {select, QueryText, Limit, FetchPlan, Params} ->
             %% (class-name:string)(text:string)(non-text-limit:int)[(fetch-plan:string)](serialized-params:bytes[])
-            Mode = sync,
-            odi_bin:encode(
+            {sync, odi_bin:encode(
                 [string, string, integer, string, bytes],
-                ["q", QueryText, Limit, FetchPlan, encode_params(Params, "params")]);
+                ["q", QueryText, Limit, FetchPlan, encode_params(Params, "params")])};
         {live, QueryText, Limit, FetchPlan, Params, _CallBack} ->
             %% (class-name:string)(text:string)(non-text-limit:int)[(fetch-plan:string)](serialized-params:bytes[])
-            Mode = live,
-            odi_bin:encode(
+            {live, odi_bin:encode(
                 [string, string, integer, string, bytes],
                 ["com.orientechnologies.orient.core.sql.query.OLiveQuery", QueryText, Limit, FetchPlan,
-                    encode_params(Params, "params")]);
+                    encode_params(Params, "params")])};
         {command, Text, SimpleParams, ComplexParams} ->
             %% (class-name:string)(text:string)(has-simple-parameters:boolean)(simple-paremeters:bytes[])(has-complex-parameters:boolean)(complex-parameters:bytes[])
-            odi_bin:encode([string, string, rawbytes, rawbytes],
-                           ["c", Text, encode_bool_params(SimpleParams, "parameters"),
-                               encode_bool_params(ComplexParams, "compositeKeyParams")]);
+            {sync, odi_bin:encode([string, string, rawbytes, rawbytes],
+                                  ["c", Text, encode_bool_params(SimpleParams, "parameters"),
+                                    encode_bool_params(ComplexParams, "compositeKeyParams")])};
         {script, Language, Text, SimpleParams, ComplexParams} ->
             %% (class-name:string)(language:string)(text:string)(has-simple-parameters:boolean)(simple-paremeters:bytes[])(has-complex-parameters:boolean)(complex-parameters:bytes[])
-            odi_bin:encode([string, string, string, rawbytes, rawbytes],
-                           ["s", Language, Text, encode_bool_params(SimpleParams, "parameters"),
-                               encode_bool_params(ComplexParams, "compositeKeyParams")])
+            {sync, odi_bin:encode([string, string, string, rawbytes, rawbytes],
+                                  ["s", Language, Text, encode_bool_params(SimpleParams, "parameters"),
+                                      encode_bool_params(ComplexParams, "compositeKeyParams")])}
     end,
     sendRequest(State, ?O_COMMAND,
         [byte, bytes],
@@ -343,10 +348,17 @@ encode_params(Params, Name) ->
 pre_connect(State, Host, Opts) ->
     Timeout = proplists:get_value(timeout, Opts, 10000),
     Port = proplists:get_value(port, Opts, 2424),
-    SockOpts = [{active, true}, {packet, raw}, binary, {nodelay, true}],
+    SockOpts = [{active, false}, {packet, raw}, binary, {nodelay, true}],
     case gen_tcp:connect(Host, Port, SockOpts, Timeout) of
-        {ok, Sock} -> {ok, State#state{mod = gen_tcp, sock = Sock, timeout = Timeout}};
-        {error, _} = E -> E
+        {ok, Sock} ->
+            {ok, <<Version:?o_short>>} = gen_tcp:recv(Sock, 2, Timeout),
+            lager:debug("Got version ~p", [Version]),
+            true = Version >= ?O_PROTO_VER_MIN,
+            true = Version =< ?O_PROTO_VER_MAX,
+            ok = inet:setopts(Sock, [{active, true}]),
+            {ok, State#state{mod = gen_tcp, sock = Sock, timeout = Timeout, version = Version}};
+        {error, _} = E ->
+            E
     end.
 
 sendRequest(#state{mod = Mod, sock = Sock, session_id = SessionId, token = <<>>},
@@ -513,14 +525,8 @@ response_header(#state{token = _Token} = State,
     end.
 
 
-on_response(_Command, Bin, #state{open_mode = wait_version} = State) ->
-    <<Version:?o_short, Rest/binary>> = Bin,
-    lager:debug("Got version ~p", [Version]),
-    true = Version >= ?O_PROTO_VER,
-    {fetch_more, State#state{open_mode = wait_answer, data = Rest}};
-
 % Response: (session-id:int)(token:bytes)
-on_response(connect, Bin, #state{sock = Sock, open_mode = wait_answer} = State) ->
+on_response(connect, Bin, #state{sock = Sock} = State) ->
     <<Status:?o_byte, _OldSessionId:?o_int, Message/binary>> = Bin,
     case Status of
         1 -> {ErrorInfo,Rest} = odi_bin:decode_error(Message),
@@ -538,7 +544,7 @@ on_response(connect, Bin, #state{sock = Sock, open_mode = wait_answer} = State) 
 	{noreply, State3};
 
 % Response: (session-id:int)(token:bytes)(num-of-clusters:short)[(cluster-name:string)(cluster-id:short)](cluster-config:bytes)(orientdb-release:string)
-on_response(db_open, Bin, #state{sock = Sock, open_mode = wait_answer} = State) ->
+on_response(db_open, Bin, #state{sock = Sock} = State) ->
     <<Status:?o_byte, _OldSessionId:?o_int, Message/binary>> = Bin,
     try
         case Status of

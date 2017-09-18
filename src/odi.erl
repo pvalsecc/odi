@@ -205,7 +205,8 @@ script(C, Language, Code, SimpleParams, ComplexParams) ->
     call(C, {command, {script, Language, Code, SimpleParams, ComplexParams}, sync}).
 
 -spec live_query(C::pid(), SQL::string(),
-                 CallBack::fun((live, {loaded|updated|deleted|created, fetched_record()}) -> any())) ->
+                 CallBack::fun((live | live_unsubscription,
+                                {loaded|updated|deleted|created, fetched_record()} | {}) -> any())) ->
     {ok, Token::integer()} | error().
 live_query(C, SQL, CallBack) ->
     live_query(C, SQL, null, CallBack).
