@@ -22,7 +22,7 @@
                 open_mode = wait_version, %connection opened with: connect() | db_open()
                 data = <<>>, %received data from socket
                 queue = queue:new(), %commands queue
-                timeout = 5000, %network timeout
+                timeout = 10000, %network timeout
                 global_properties = #{},
                 callbacks = #{}
                 }).
@@ -329,7 +329,7 @@ command(Command, State) ->
 % support functions ---
 
 pre_connect(State, Host, Opts) ->
-    Timeout = proplists:get_value(timeout, Opts, 5000),
+    Timeout = proplists:get_value(timeout, Opts, 10000),
     Port = proplists:get_value(port, Opts, 2424),
     SockOpts = [{active, true}, {packet, raw}, binary, {nodelay, true}],
     case gen_tcp:connect(Host, Port, SockOpts, Timeout) of
