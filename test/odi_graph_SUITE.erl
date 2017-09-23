@@ -58,14 +58,26 @@ reading(Config) ->
     simple(Config),
     Con = ?config(con, Config),
     {ok, Transaction} = odi_graph:begin_transaction(Con),
-    [{HelloRid, document, 1, "Test", HelloData}] =
-        odi_graph:query(Transaction, "SELECT FROM Test WHERE field1='hello'", -1, default),
-    {HelloRid, document, 1, "Test", HelloData} = odi_graph:record_load(Transaction, HelloRid, default),
-    #{"field1" := "hello", "out_TestEdge" := [Edge1Rid, _Edge2Rid]} = HelloData,
-    {Edge1Rid, document, 1, "TestEdge", Edge1Data} = odi_graph:record_load(Transaction, Edge1Rid, default),
-    #{"out" := HelloRid, "in" := WorldRid} = Edge1Data,
-    {WorldRid, document, 1, "TestSub", WorldData} = odi_graph:record_load(Transaction, WorldRid, default),
-    #{"field1" := "world"} = WorldData.
+    try
+        [{HelloRid, document, 1, "Test", HelloData}] =
+            odi_graph:query(Transaction, "SELECT FROM Test WHERE field1='hello'", -1, default),
+
+        {HelloRid, document, 1, "Test", HelloData} = odi_graph:record_load(Transaction, HelloRid, default),
+        #{"field1" := "hello", "out_TestEdge" := [Edge1Rid, _Edge2Rid]} = HelloData,
+
+        {Edge1Rid, document, 1, "TestEdge", Edge1Data} = odi_graph:record_load(Transaction, Edge1Rid, default),
+        #{"out" := HelloRid, "in" := WorldRid} = Edge1Data,
+
+        {WorldRid, document, 1, "TestSub", WorldData} = odi_graph:record_load(Transaction, WorldRid, default),
+        #{"field1" := "world"} = WorldData,
+
+        ParamResult = odi_graph:query(Transaction, "SELECT FROM Test WHERE field1 = :field1", -1, default,
+                                      #{"field1" => "hello"}),
+        [{HelloRid, document, 1, "Test", HelloData}] = ParamResult
+    after
+        odi_graph:rollback(Transaction)
+    end.
+
 
 check_results(IdRemaps, Con, VertexVersion) ->
     #{

@@ -1,7 +1,7 @@
 -module(odi_typed).
 
 %% API
--export([typify_record/2, untypify_record/1, index_global_properties/1, index_records/3]).
+-export([typify_record/2, typify_map/1, untypify_record/1, index_global_properties/1, index_records/3]).
 
 typify_record({Class, Data}, Classes) ->
     #{Class := ClassDef} = Classes,
@@ -9,8 +9,13 @@ typify_record({Class, Data}, Classes) ->
     Properties = merged_class_properties(ClassDef, Classes, #{}),
     DataTypified = maps:map(fun(K, V) ->
         typify_field(K, V, StrictMode, Properties, Classes)
-                            end, Data),
+    end, Data),
     {Class, DataTypified}.
+
+typify_map(Data) ->
+    maps:map(fun(_K, V) ->
+        typify_unknown_field(V)
+    end, Data).
 
 merged_class_properties(#{"properties" := CurrentProperties} = ClassDef, Classes, AllProperties) ->
     #{"superClasses" := SuperClasses} = ClassDef,

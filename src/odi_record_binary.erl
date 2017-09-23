@@ -126,14 +126,40 @@ encode({embedded_list, L}, Offset) ->
     {<<Header/binary, Body/binary>>, ListOffset + byte_size(Body)};
 encode({embedded_set, L}, Offset) ->
     encode({embedded_list, L}, Offset);
-%TODO: embedded_map, decimal
+encode({embedded_map, Map}, Offset) ->  %% TODO: only string keys
+    {Start, OffsetHeader} = encode([{varint, map_size(Map)}], Offset),
+    {TmpHeader, HeaderPosReversed} = maps:fold(fun(K, {Type, _value}, {PrevHeader, PrevPos}) ->
+        {HeaderStart, _} = encode([PrevHeader, {byte, encode_type(string)}, {string, K}], OffsetHeader),
+        {<<HeaderStart/binary, 0:32, (encode_type(Type)):8>>, [byte_size(HeaderStart) | PrevPos]}
+    end, {<<>>, []}, Map),
+    DataOffset = OffsetHeader + byte_size(TmpHeader),
+    {Data, DataPosReversed} = maps:fold(fun(_k, {Type, Value}, {PrevData, PrevPos}) ->
+        case Value of
+            null ->
+                {PrevData, [null | PrevPos]};
+            _ ->
+                {CurData, _} = encode([PrevData, {Type, Value}], DataOffset),
+                {CurData, [byte_size(PrevData) | PrevPos]}
+        end
+    end, {<<>>, []}, Map),
+    Header = lists:foldr(fun({PosHeader, PosData}, PrevHeader) ->
+        case PosData of
+            null ->
+                PrevHeader;
+            _ ->
+                <<Before:PosHeader/binary, 0:32/integer, After/binary>> = PrevHeader,
+                <<Before/binary, (PosData + DataOffset):32/integer, After/binary>>
+        end
+    end, TmpHeader, lists:zip(HeaderPosReversed, DataPosReversed)),
+    {<<Start/binary, Header/binary, Data/binary>>, DataOffset + byte_size(Data)};
+%TODO: decimal
 encode({link, {ClusterId, RecordPosition}}, Offset) ->
     encode([{varint, ClusterId}, {varint, RecordPosition}], Offset);
 encode({link_list, Links}, Offset) ->
     encode([{varint, length(Links)} | [{link, Link} || Link <- Links]], Offset);
 encode({link_set, Links}, Offset) ->
     encode({link_list, Links}, Offset);
-encode({link_map, Links}, Offset) ->  %% TODO: only strings
+encode({link_map, Links}, Offset) ->  %% TODO: only string keys
     LinksBin = maps:fold(fun(K, V, Prev) ->
         {CurLink, _} = encode([Prev, {byte, encode_type(string)}, {string, K}, {link, V}], Offset),
         CurLink
@@ -478,5 +504,12 @@ edge_test() ->
     io:format("Bin=~p~n", [Bin]),
     {Bin2, BinLen} = encode_record("V", Data, 0),  %% map order is not the same between java and erlang, so cannot compare Bin2 and Bin
     {"V", Data, <<>>} = decode_record($d, Bin2, Bin2, #{}).
+
+embedded_map_test() ->
+    Map = #{"int" => {integer, 12}, "string" => {string, "abcdef"}},
+    {Data, Offset} = encode({embedded_map, Map}, 4),
+    ExceptedOffset = 4 + byte_size(Data),
+    ExceptedOffset = Offset,
+    {Map, <<>>} = decode(embedded_map, Data, <<0:?o_int, Data/binary>>).
 
 -endif.

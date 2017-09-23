@@ -57,7 +57,7 @@ handle_call(Command, From, #state{queue=Q, timeout=Timeout} = State) ->
     Req = {{call, From}, Command},
     case command(Command, State#state{queue = queue:in(Req, Q)}) of
         {noreply, State2} -> {noreply, State2, Timeout};
-        Error -> Error
+        Error -> {reply, Error, State}
     end.
 
 handle_cast({{Method, From, Ref}, Command} = Req, State)
@@ -281,7 +281,14 @@ command({command, Query, Mode}, State) ->
             Mode = sync,
             odi_bin:encode(
                 [string, string, integer, string, bytes],
-                ["q", QueryText, Limit, FetchPlan, <<>>]);  % TODO: support params
+                ["q", QueryText, Limit, FetchPlan, <<>>]);
+        {select, QueryText, Limit, FetchPlan, Params} ->
+            %% (class-name:string)(text:string)(non-text-limit:int)[(fetch-plan:string)](serialized-params:bytes[])
+            Mode = sync,
+            {ParamsBin, _ParamsOffset} = odi_record_binary:encode_record("", #{"params" => {embedded_map, Params}}, 0),
+            odi_bin:encode(
+                [string, string, integer, string, bytes],
+                ["q", QueryText, Limit, FetchPlan, ParamsBin]);
         {live, QueryText, Limit, FetchPlan, _CallBack} ->
             %% (class-name:string)(text:string)(non-text-limit:int)[(fetch-plan:string)](serialized-params:bytes[])
             Mode = live,
@@ -315,8 +322,9 @@ command({tx_commit, TxId, UsingTxLog, Operations}, State) ->
         [TxId, UsingTxLog, lists:map(fun encode_tx_operation/1, Operations), UnknownStuff]),
     {noreply, State};
 
-command(_Command, State) ->
-    {error, State}.
+command(Command, State) ->
+    lager:error("Unknown command: ~p", [Command]),
+    {reply, {error, "Unknown command"}, State}.
 
 % support functions ---
 
@@ -684,6 +692,8 @@ encode_base_tx_operation(OperationType, {ClusterId, ClusterPosition}, RecordType
         [1, OperationType, ClusterId, ClusterPosition, odi_bin:encode_record_type(RecordType)]).
 
 
+decode_records_iterable(<<>>, _GlobalProperties, Acc) ->
+    {lists:reverse(Acc), <<>>};
 decode_records_iterable(<<0:?o_byte, Msg/binary>>, _GlobalProperties, Acc) ->
     {lists:reverse(Acc), Msg};
 decode_records_iterable(<<1:?o_byte, Msg/binary>>, GlobalProperties, Acc) ->

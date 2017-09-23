@@ -9,6 +9,7 @@
     update/3,
     delete/3,
     query/4,
+    query/5,
     record_load/3,
     get_cache/1,
     commit/2,
@@ -72,6 +73,11 @@ delete(T, Rid, Version) ->
     [odi:fetched_record()] | odi:error().
 query(T, Query, Limit, FetchPlan) ->
     gen_server:call(T, {query , Query, Limit, FetchPlan}).
+
+-spec query(T::pid(), Query::string(), Limit::integer(), FetchPlan::string()|default, Params::#{string()=>any()}) ->
+    [odi:fetched_record()] | odi:error().
+query(T, Query, Limit, FetchPlan, Params) ->
+    gen_server:call(T, {query , Query, Limit, FetchPlan, Params}).
 
 -spec record_load(T::pid(), Rid::odi:rid(), FetchPlan::string()) -> odi:fetched_record()|null.
 record_load(T, Rid, FetchPlan) ->
@@ -161,12 +167,9 @@ handle_call({update, Rid, Data}, _From, State) ->
 handle_call({delete, Rid, Version}, _From, State) ->
     {reply, ok, delete_impl(rid(Rid), Version, State)};
 handle_call({query , Query, Limit, FetchPlan}, _From, #state{con=Con}=State) ->
-    case odi:query(Con, Query, Limit, FetchPlan) of
-        {error, Messages} ->
-            {reply, {error, Messages}, State};
-        {Results, ForCache} ->
-            {reply, untypify_results(Results), cache_records(Results, cache_records(ForCache, State))}
-    end;
+    handle_query_result(odi:query(Con, Query, Limit, FetchPlan), State);
+handle_call({query , Query, Limit, FetchPlan, Params}, _From, #state{con=Con}=State) ->
+    handle_query_result(odi:query(Con, Query, Limit, FetchPlan, odi_typed:typify_map(Params)), State);
 handle_call({record_load , Rid, FetchPlan}, _From, State) ->
     {Record, State2} = record_load_impl(Rid, FetchPlan, State),
     {reply, untypify_results(Record), State2};
@@ -407,3 +410,8 @@ untypify_results([]) ->
     [];
 untypify_results([Cur | Rest]) ->
     [untypify_results(Cur) | untypify_results(Rest)].
+
+handle_query_result({error, Messages}, State) ->
+    {reply, {error, Messages}, State};
+handle_query_result({Results, ForCache}, State) ->
+    {reply, untypify_results(Results), cache_records(Results, cache_records(ForCache, State))}.

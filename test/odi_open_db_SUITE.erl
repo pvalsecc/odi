@@ -110,7 +110,9 @@ query(Config) ->
     2 = length(Results2),
 
     {error, Error} = odi:query(Con, "notselect from v", -1 , default),
-    io:format("Error: ~p~n", [Error]).
+    io:format("Error: ~p~n", [Error]),
+
+    {[{{VClusterId1, RecordPos1}, document, 1, "V", Data1}], []} = odi:query(Con, "select from V where toto = :toto", -1, default, #{"toto" => {integer, 42}}).
 
 command(Config) ->
     Con = ?config(con, Config),

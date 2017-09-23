@@ -21,6 +21,7 @@
          record_update/7,
          record_delete/4,
          query/4,
+         query/5,
          command/2,
          script/3,
          live_query/3,
@@ -169,6 +170,14 @@ record_delete(C, {ClusterId, ClusterPosition}, RecordVersion, Mode) ->
 query(C, SQL, Limit, FetchPlan) ->
     FetchPlan2 = case FetchPlan of default -> "*:1"; _ -> FetchPlan end,
     call(C, {command, {select, SQL, Limit, FetchPlan2}, sync}).
+
+%SQL query with parameters (SELECT or TRAVERSE).
+-spec query(C::pid(), SQL::string(), Limit::integer(), FetchPlan::string()|default,
+            Params::#{string()=>any()}) ->
+    {Results::[fetched_record()], Cached::[fetched_record()]} | error().
+query(C, SQL, Limit, FetchPlan, Params) ->
+    FetchPlan2 = case FetchPlan of default -> "*:1"; _ -> FetchPlan end,
+    call(C, {command, {select, SQL, Limit, FetchPlan2, Params}, sync}).
 
 %Syncronous SQL command.
 -spec command(C::pid(), SQL::string()) -> [fetched_record()] | error().
