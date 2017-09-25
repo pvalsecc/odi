@@ -1,4 +1,5 @@
 %%% Copyright (C) 2013 - Aleksandr Mescheryakov.  All rights reserved.
+%% @private
 
 -module(odi_bin).
 

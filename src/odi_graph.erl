@@ -41,16 +41,13 @@
 %%% API
 %%%===================================================================
 
-%%--------------------------------------------------------------------
-%% @doc
-%% Starts a transaction
-%%
-%% @end
-%%--------------------------------------------------------------------
 -spec begin_transaction(Con::pid()) ->
     {ok, Pid :: pid()} | ignore | {error, Reason :: term()}.
+%% @doc
+%% Starts a transaction
 begin_transaction(Con) ->
     gen_server:start_link({local, ?SERVER}, ?MODULE, [Con], []).
+
 
 -spec create_vertex(T::pid(), TempId::neg_integer()|odi:rid(), Record::{Class::string(), Data:: record_data()}) -> ok.
 create_vertex(T, TempId, Record) ->

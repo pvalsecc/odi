@@ -1,5 +1,7 @@
+%% @private
 %% https://orientdb.com/docs/last/Record-Schemaless-Binary-Serialization.html
 %% https://github.com/orientechnologies/orientdb/blob/master/core/src/main/java/com/orientechnologies/orient/core/serialization/serializer/record/binary/ORecordSerializerNetworkV0.java
+
 -module(odi_record_binary).
 
 %% API
