@@ -72,16 +72,16 @@ delete(T, Rid, Version) ->
 -spec query(T::pid(), Query::string(), Limit::integer(), FetchPlan::string()|default) ->
     [odi:fetched_record()] | odi:error().
 query(T, Query, Limit, FetchPlan) ->
-    gen_server:call(T, {query , Query, Limit, FetchPlan}).
+    gen_server:call(T, {query, Query, Limit, FetchPlan, null}).
 
 -spec query(T::pid(), Query::string(), Limit::integer(), FetchPlan::string()|default, Params::#{string()=>any()}) ->
     [odi:fetched_record()] | odi:error().
 query(T, Query, Limit, FetchPlan, Params) ->
-    gen_server:call(T, {query , Query, Limit, FetchPlan, Params}).
+    gen_server:call(T, {query, Query, Limit, FetchPlan, Params}).
 
 -spec record_load(T::pid(), Rid::odi:rid(), FetchPlan::string()) -> odi:fetched_record()|null.
 record_load(T, Rid, FetchPlan) ->
-    gen_server:call(T, {record_load , Rid, FetchPlan}).
+    gen_server:call(T, {record_load, Rid, FetchPlan}).
 
 -spec get_cache(T::pid()) -> [odi:fetched_record()].
 get_cache(T) ->
@@ -166,9 +166,7 @@ handle_call({update, Rid, Data}, _From, State) ->
     {reply, ok, update_impl(rid(Rid), Data, State)};
 handle_call({delete, Rid, Version}, _From, State) ->
     {reply, ok, delete_impl(rid(Rid), Version, State)};
-handle_call({query , Query, Limit, FetchPlan}, _From, #state{con=Con}=State) ->
-    handle_query_result(odi:query(Con, Query, Limit, FetchPlan), State);
-handle_call({query , Query, Limit, FetchPlan, Params}, _From, #state{con=Con}=State) ->
+handle_call({query, Query, Limit, FetchPlan, Params}, _From, #state{con=Con}=State) ->
     handle_query_result(odi:query(Con, Query, Limit, FetchPlan, odi_typed:typify_map(Params)), State);
 handle_call({record_load , Rid, FetchPlan}, _From, State) ->
     {Record, State2} = record_load_impl(Rid, FetchPlan, State),
@@ -185,7 +183,7 @@ handle_call({commit, TxId}, _From, #state{con=Con, commands=Commands}=State) ->
     end;
 handle_call(Request, _From, State) ->
     lager:error("Unknown call: ~p", [Request]),
-    {reply, ok, State}.
+    {reply, {error, "Unknown call"}, State}.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -400,7 +398,11 @@ cache_records(Records, #state{cache=Cache}=State) ->
 index_records([], Acc) ->
     Acc;
 index_records([Cur | Rest], Acc) ->
-    index_records(Rest, Acc#{element(1, Cur) => Cur}).
+    Rid = element(1, Cur),
+    case Rid of
+        {-1, -1} -> index_records(Rest, Acc);
+        _ -> index_records(Rest, Acc#{Rid => Cur})
+    end.
 
 untypify_results(null) ->
     null;

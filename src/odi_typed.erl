@@ -12,6 +12,8 @@ typify_record({Class, Data}, Classes) ->
     end, Data),
     {Class, DataTypified}.
 
+typify_map(null) ->
+    null;
 typify_map(Data) ->
     maps:map(fun(_K, V) ->
         typify_unknown_field(V)

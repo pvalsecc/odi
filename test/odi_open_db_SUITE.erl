@@ -12,10 +12,10 @@
 %% API
 -export([all/0, init_per_testcase/2, end_per_testcase/2, init_lager/0]).
 
--export([stats/1, record/1, query/1, command/1, tx/1]).
+-export([stats/1, record/1, query/1, command/1, script/1, tx/1]).
 
 all() ->
-    [stats, record, query, command, tx].
+    [stats, record, query, command, script, tx].
 
 init_lager() ->
     _ = application:stop(lager),
@@ -118,13 +118,17 @@ command(Config) ->
     Con = ?config(con, Config),
 
     Data = #{"x" => {float, 4.5}},
-    Result = odi:command(Con, "INSERT INTO V (x) VALUES (4.5)"),
+    Result = odi:command(Con, "INSERT INTO V (x) VALUES (:x)", #{"x" => {float, 4.5}}, null),
     [{{ClusterId, RecordPos}, document, 1, "V", Data}] = Result,
 
     {Result2, []} = odi:query(Con, "select from V", -1, default),
     [{{ClusterId, RecordPos}, document, 1, "V", Data}] = Result2.
 
-%% TODO: test script
+script(Config) ->
+    Con = ?config(con, Config),
+
+    {[{{-1, -1}, document, 0, [], #{"result" := {integer, 4}}}], []} =
+        odi:script(Con, "Javascript", "print('hello world'); 4").
 
 tx(Config) ->
     Con = ?config(con, Config),

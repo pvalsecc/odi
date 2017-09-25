@@ -23,8 +23,11 @@
          query/4,
          query/5,
          command/2,
+         command/4,
          script/3,
+         script/5,
          live_query/3,
+         live_query/4,
          tx_commit/4]).
 
 -include("../include/odi.hrl").
@@ -168,12 +171,11 @@ record_delete(C, {ClusterId, ClusterPosition}, RecordVersion, Mode) ->
 -spec query(C::pid(), SQL::string(), Limit::integer(), FetchPlan::string()|default) ->
     {Results::[fetched_record()], Cached::[fetched_record()]} | error().
 query(C, SQL, Limit, FetchPlan) ->
-    FetchPlan2 = case FetchPlan of default -> "*:1"; _ -> FetchPlan end,
-    call(C, {command, {select, SQL, Limit, FetchPlan2}, sync}).
+    query(C, SQL, Limit, FetchPlan, null).
 
 %SQL query with parameters (SELECT or TRAVERSE).
 -spec query(C::pid(), SQL::string(), Limit::integer(), FetchPlan::string()|default,
-            Params::#{string()=>any()}) ->
+            Params::#{string()=>any()} | null) ->
     {Results::[fetched_record()], Cached::[fetched_record()]} | error().
 query(C, SQL, Limit, FetchPlan, Params) ->
     FetchPlan2 = case FetchPlan of default -> "*:1"; _ -> FetchPlan end,
@@ -182,19 +184,37 @@ query(C, SQL, Limit, FetchPlan, Params) ->
 %Syncronous SQL command.
 -spec command(C::pid(), SQL::string()) -> [fetched_record()] | error().
 command(C, SQL) ->
-    {Results, []} = call(C, {command, {command, SQL}, sync}),
+    command(C, SQL, null, null).
+
+-spec command(C::pid(), SQL::string(), SimpleParams::#{string() => any()} | null,
+              ComplexParams::#{string() => {embedded_list, []}} | null) -> [fetched_record()] | error().
+command(C, SQL, SimpleParams, ComplexParams) ->
+    {Results, []} = call(C, {command, {command, SQL, SimpleParams, ComplexParams}, sync}),
     Results.
 
 %Syncronous SQL script.
--spec script(C::pid(), Language::string(), Code::string()) -> {[fetched_record()], [fetched_record()]} | error().
+-spec script(C::pid(), Language::string(), Code::string()) ->
+    {[fetched_record()], [fetched_record()]} | error().
 script(C, Language, Code) ->
-    call(C, {command, {script, Language, Code}, sync}).
+    script(C, Language, Code, null, null).
+
+-spec script(C::pid(), Language::string(), Code::string(), SimpleParams::#{string() => any()} | null,
+             ComplexParams::#{string() => {embedded_list, []}} | null) ->
+    {[fetched_record()], [fetched_record()]} | error().
+script(C, Language, Code, SimpleParams, ComplexParams) ->
+    call(C, {command, {script, Language, Code, SimpleParams, ComplexParams}, sync}).
 
 -spec live_query(C::pid(), SQL::string(),
                  CallBack::fun((live, {loaded|updated|deleted|created, fetched_record()}) -> any())) ->
     {ok, Token::integer()} | error().
 live_query(C, SQL, CallBack) ->
-    case call(C, {command, {live, SQL, -1, "", CallBack}, live}) of
+    live_query(C, SQL, null, CallBack).
+
+-spec live_query(C::pid(), SQL::string(), Params::#{string() => any()} | null,
+    CallBack::fun((live, {loaded|updated|deleted|created, fetched_record()}) -> any())) ->
+    {ok, Token::integer()} | error().
+live_query(C, SQL, Params, CallBack) ->
+    case call(C, {command, {live, SQL, -1, "", Params, CallBack}, live}) of
         {[{_Rid, document, 0, _Class, #{"token" := {integer, Token}}}],[]} -> {ok, Token};
         Other -> Other
     end.

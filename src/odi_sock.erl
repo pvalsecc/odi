@@ -276,32 +276,29 @@ command({record_delete, ClusterId, ClusterPosition, RecordVersion, Mode}, State)
 %   - asynchronous commands: [(asynch-result-type:byte)[(asynch-result-content:?)]*](pre-fetched-record-size)[(pre-fetched-record)]*+
 command({command, Query, Mode}, State) ->
     CommandPayload = case Query of
-        {select, QueryText, Limit, FetchPlan} ->
-            %% (class-name:string)(text:string)(non-text-limit:int)[(fetch-plan:string)](serialized-params:bytes[])
-            Mode = sync,
-            odi_bin:encode(
-                [string, string, integer, string, bytes],
-                ["q", QueryText, Limit, FetchPlan, <<>>]);
         {select, QueryText, Limit, FetchPlan, Params} ->
             %% (class-name:string)(text:string)(non-text-limit:int)[(fetch-plan:string)](serialized-params:bytes[])
             Mode = sync,
-            {ParamsBin, _ParamsOffset} = odi_record_binary:encode_record("", #{"params" => {embedded_map, Params}}, 0),
             odi_bin:encode(
                 [string, string, integer, string, bytes],
-                ["q", QueryText, Limit, FetchPlan, ParamsBin]);
-        {live, QueryText, Limit, FetchPlan, _CallBack} ->
+                ["q", QueryText, Limit, FetchPlan, encode_params(Params, "params")]);
+        {live, QueryText, Limit, FetchPlan, Params, _CallBack} ->
             %% (class-name:string)(text:string)(non-text-limit:int)[(fetch-plan:string)](serialized-params:bytes[])
             Mode = live,
             odi_bin:encode(
                 [string, string, integer, string, bytes],
                 ["com.orientechnologies.orient.core.sql.query.OLiveQuery", QueryText, Limit, FetchPlan,
-                    <<>>]);  % TODO: support params
-        {command, Text} ->
+                    encode_params(Params, "params")]);
+        {command, Text, SimpleParams, ComplexParams} ->
             %% (class-name:string)(text:string)(has-simple-parameters:boolean)(simple-paremeters:bytes[])(has-complex-parameters:boolean)(complex-parameters:bytes[])
-            odi_bin:encode([string, string, bool, bool], ["c", Text, false, false]);  % TODO: support params
-        {script, Language, Text} ->
+            odi_bin:encode([string, string, rawbytes, rawbytes],
+                           ["c", Text, encode_bool_params(SimpleParams, "parameters"),
+                               encode_bool_params(ComplexParams, "compositeKeyParams")]);
+        {script, Language, Text, SimpleParams, ComplexParams} ->
             %% (class-name:string)(language:string)(text:string)(has-simple-parameters:boolean)(simple-paremeters:bytes[])(has-complex-parameters:boolean)(complex-parameters:bytes[])
-            odi_bin:encode([string, string, string, bool, bool], ["s", Language, Text, false, false])  % TODO: support params
+            odi_bin:encode([string, string, string, rawbytes, rawbytes],
+                           ["s", Language, Text, encode_bool_params(SimpleParams, "parameters"),
+                               encode_bool_params(ComplexParams, "compositeKeyParams")])
     end,
     sendRequest(State, ?O_COMMAND,
         [byte, bytes],
@@ -325,6 +322,21 @@ command({tx_commit, TxId, UsingTxLog, Operations}, State) ->
 command(Command, State) ->
     lager:error("Unknown command: ~p", [Command]),
     {reply, {error, "Unknown command"}, State}.
+
+
+encode_bool_params(null, _Name) ->
+    odi_bin:encode(bool, false);
+encode_bool_params(Params, Name) ->
+    odi_bin:encode([bool, bytes], [true, encode_params(Params, Name)]).
+
+
+encode_params(null, _Name) ->
+    <<>>;
+encode_params(Params, Name) ->
+    {ParamsBin, _ParamsOffset} =
+        odi_record_binary:encode_record("", #{Name => {embedded_map, Params}}, 0),
+    ParamsBin.
+
 
 % support functions ---
 
@@ -633,7 +645,7 @@ on_response(command, Bin, State) ->
         0 ->
             {Results, Rest} = decode_command_answer(Message, State2),
             State3 = case current_command(State2) of
-                {command, {live, _SQL, _Limit, _FetchPlan, CallBack}, live} ->
+                {command, {live, _SQL, _Limit, _FetchPlan, _Params, CallBack}, live} ->
                     %% that was a subscription to a live query
                     {[{{-1, -1}, document, 0, "", #{"token" := {integer, Token}}}],[]} = Results,
                     PrevCallBacks = State2#state.callbacks,
