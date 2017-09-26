@@ -378,16 +378,16 @@ convert_type(Type) ->
 -include_lib("eunit/include/eunit.hrl").
 
 encode_record_test() ->
-    Expected = hex:hexstr_to_bin("00025608746f746f00000018010874757475000000190700180874757475"),
+    Expected = hex2bin:hexstr_to_bin("00025608746f746f00000018010874757475000000190700180874757475"),
     Offset = byte_size(Expected),
     {Expected, Offset} = encode_record("V", #{toto => {integer, 12}, tutu => {string, "tutu"}}, 0).
 
 decode_record_test() ->
-    Bin = hex:hexstr_to_bin("00025608746f746f000000180108747574750000001907001808747574750102"),
+    Bin = hex2bin:hexstr_to_bin("00025608746f746f000000180108747574750000001907001808747574750102"),
     {Class, Data, Rest} = decode_record($d, Bin, Bin, #{}),
     "V" = Class,
     #{"toto" := {integer, 12}, "tutu" := {string, "tutu"}} = Data,
-    ExpectedRest = hex:hexstr_to_bin("0102"),
+    ExpectedRest = hex2bin:hexstr_to_bin("0102"),
     ExpectedRest = Rest.
 
 link_list_test() ->
@@ -495,7 +495,7 @@ complex_test() ->
     {"", Data, <<>>} = decode_record($d, Bin, Bin, #{}).
 
 edge_test() ->
-    Bin = hex:hexstr_to_bin("00025608746f746f000000220108747574750000002307086f75745f000000281600180874757475039533e8cb477648ab976dc8c38151667d00000001fffffffffffffffffffc"),
+    Bin = hex2bin:hexstr_to_bin("00025608746f746f000000220108747574750000002307086f75745f000000281600180874757475039533e8cb477648ab976dc8c38151667d00000001fffffffffffffffffffc"),
     Data = #{
         "out_" => {linkbag, {198324500136199210974642822101347690109, [{-1, -4}]}},
         "toto" => {integer, 12},

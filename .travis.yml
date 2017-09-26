@@ -2,6 +2,10 @@ sudo: required
 services:
   - docker
 
+cache:
+  directories:
+    - $HOME/.cache/rebar3
+
 language: erlang
 otp_release:
   - 20.0
@@ -12,6 +16,11 @@ env:
 
 install:
   - wget https://s3.amazonaws.com/rebar3/rebar3 && chmod +x rebar3
+  - mkdir -p ~/.hex
+  - echo '{username,<<"'${HEX_USERNAME}'">>}.' > ~/.hex/hex.config
+  - echo '{key,<<"'${HEX_KEY}'">>}.' >> ~/.hex/hex.config
+  - mkdir -p ~/.config/rebar3
+  - echo '{plugins, [rebar3_hex]}.' > ~/.config/rebar3/rebar.config
 
 before_script:
   - ./startOrientdb.sh ${ORIENTDB_VERSION}
@@ -19,4 +28,12 @@ before_script:
 script:
   - rebar3 eunit
   - rebar3 ct
-  - rebar3 dialyzer
+  - rebar3 dialyzer && cp _build/default/rebar3_*_plt $HOME/.cache/rebar3/
+
+deploy:
+  - provider: script
+    script: echo "Y" | rebar3 hex publish && rebar3 hex docs
+    skip_cleanup: true
+    on:
+      tags: true
+      condition: $ORIENTDB_VERSION = 2.2.24

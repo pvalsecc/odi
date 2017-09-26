@@ -374,7 +374,7 @@ sendRequest(#state{mod = Mod, sock = Sock, session_id = SessionId, token=Token},
 
 % port_command() more efficient then gen_tcp:send()
 do_send(gen_tcp, Sock, Bin) ->
-    lager:debug("Sending: 0x~s", [hex:bin_to_hexstr(Bin)]),
+    lager:debug("Sending: 0x~s", [hex2bin:bin_to_hexstr(Bin)]),
     try erlang:port_command(Sock, Bin) of
         true ->
             ok
@@ -421,7 +421,7 @@ command_tag(State) ->
 %main loop
 loop(#state{data = <<3:?o_byte, _SessionId:?o_int, Command/binary>>, timeout = Timeout} = State) ->
     %% A push
-    lager:debug("Received push: 0x~s", [hex:bin_to_hexstr(Command)]),
+    lager:debug("Received push: 0x~s", [hex2bin:bin_to_hexstr(Command)]),
     case on_push(Command, State) of
         {fetch_more, State2} -> {noreply, State2, Timeout};
         #state{data = <<>>} = State2 -> {noreply, State2};
@@ -437,7 +437,7 @@ loop(#state{data = Data, timeout = Timeout} = State) ->
         _ ->
             case byte_size(Data) > 0 of
                 true ->
-                    lager:debug("Received: 0x~s", [hex:bin_to_hexstr(Data)]),
+                    lager:debug("Received: 0x~s", [hex2bin:bin_to_hexstr(Data)]),
                     case on_response(Cmd, Data, State) of
                         {fetch_more, State2} -> {noreply, State2, Timeout};
                         {noreply, #state{data = <<>>} = State2} -> {noreply, State2};
@@ -791,7 +791,7 @@ decode_record_iterable_test() ->
         26 => #{"id" => 26,"name" => "in","type" => "LINK"},
         27 => #{"id" => 27,"name" => "out","type" => "LINK"}
     },
-    Bin = hex:hexstr_to_bin("016400000002000000520008546573742F0000002D3100000033086F75745F0000003416186F75745F54657374456467650000004316000A68656C6C6F540100000001002900000000000000000100000001002A000000000000000002000064002A0000000000000000000000010000001900105465737445646765370000001535000000170032004200020000640029000000000000000000000001000000190010546573744564676535000000153700000017004200320000"),
+    Bin = hex2bin:hexstr_to_bin("016400000002000000520008546573742F0000002D3100000033086F75745F0000003416186F75745F54657374456467650000004316000A68656C6C6F540100000001002900000000000000000100000001002A000000000000000002000064002A0000000000000000000000010000001900105465737445646765370000001535000000170032004200020000640029000000000000000000000001000000190010546573744564676535000000153700000017004200320000"),
     Records = decode_records_iterable(Bin, GlobalProperties, []),
     Expected = [
         {true, document, 2, "Test", #{

@@ -4,4 +4,10 @@
   {modules, []},
   {registered, []},
   {applications, [kernel, stdlib, crypto, ssl, lager]},
-  {included_applications, []}]}.
+  {included_applications, []},
+  {licenses, ["Apache"]},
+  {links, [
+    {"Github", "https://github.com/pvalsecc/odi"}
+  ]},
+  {maintainers, ["Aleksandr Mescheryakov", "Patrick Valsecchi"]}
+]}.
