@@ -60,13 +60,13 @@ record(Config) ->
     {_, EClusterId} = lists:keyfind(<<"e">>, 1, Clusters),
 
     Data1 = #{"toto" => {integer, 42}, "tutu" => {string, "tutu"}},
-    {VClusterId, RecordPos1, 1, []} = odi:record_create(Con, VClusterId, {"V", Data1}, document, sync),
+    {{VClusterId, RecordPos1}, 1, []} = odi:record_create(Con, VClusterId, {"V", Data1}, document, sync),
 
     Data2 = #{"x" => {double, 4.5}},
-    {VClusterId, RecordPos2, 1, []} = odi:record_create(Con, VClusterId, {"V", Data2}, document, sync),
+    {{VClusterId, RecordPos2}, 1, []} = odi:record_create(Con, VClusterId, {"V", Data2}, document, sync),
 
     Data3 = #{"in" => {link, {VClusterId, RecordPos1}}, "out" => {link, {VClusterId, RecordPos2}}},
-    {EClusterId, RecordPos3, 1, []} = odi:record_create(Con, EClusterId, {"E", Data3}, document, sync),
+    {{EClusterId, RecordPos3}, 1, []} = odi:record_create(Con, EClusterId, {"E", Data3}, document, sync),
 
     Data1b = #{"out_" => {linkbag, [{EClusterId, RecordPos3}]}},
     Data1final = maps:merge(Data1, Data1b),
@@ -95,14 +95,14 @@ query(Config) ->
     [] = Results0,
 
     Data1 = #{"toto" => {integer, 42}, "tutu" => {string, "tutu"}},
-    {VClusterId1, RecordPos1, 1, []} = odi:record_create(Con, -1, {"V", Data1}, document, sync),
+    {{VClusterId1, RecordPos1}, 1, []} = odi:record_create(Con, -1, {"V", Data1}, document, sync),
 
     {Results1, []} = odi:query(Con, "select from V", -1, default),
     {{VClusterId1, RecordPos1}, document, 1, "V", Data1} = lists:keyfind({VClusterId1, RecordPos1}, 1, Results1),
     1 = length(Results1),
 
     Data2 = #{"x" => {double, 4.5}},
-    {VClusterId2, RecordPos2, 1, []} = odi:record_create(Con, -1, {"V", Data2}, document, sync),
+    {{VClusterId2, RecordPos2}, 1, []} = odi:record_create(Con, -1, {"V", Data2}, document, sync),
 
     {Results2, []} = odi:query(Con, "select from V", -1, default),
     {{VClusterId1, RecordPos1}, document, 1, "V", Data1} = lists:keyfind({VClusterId1, RecordPos1}, 1, Results2),
